@@ -23,6 +23,17 @@ from src.eda_diagnostics import (
     compute_stylized_facts_table,
     run_adf_stationarity_table,
 )
+from src.var_estimators import (
+    build_phase1_comparison_table,
+    cholesky_monte_carlo_var_es,
+    compute_pretrade_marginal_var_sizing,
+    compute_subadditivity_and_diversification,
+    cornish_fisher_var_es,
+    historical_simulation_var_es,
+    parametric_lognormal_var_es,
+    parametric_normal_var_es,
+    parametric_student_t_var_es,
+)
 
 
 def test_cpp17_kernel_loaded_and_put_call_parity():
@@ -101,3 +112,50 @@ def test_phase0_stationarity_and_fat_tails():
     corr_60 = compute_rolling_stock_bond_correlation(bundle["arith_returns"], "SPY", "TLT", window=60)
     assert corr_60.loc["2020-03-01":"2020-04-30"].mean() < -0.20
     assert corr_60.loc["2022-06-01":"2022-12-31"].mean() > 0.20
+
+
+def test_phase1_closed_form_identities_and_subadditivity():
+    """
+    Verify closed-form Gaussian VaR/ES identities:
+      VaR_{0.99}^{Norm} = 2.32634787 * sigma
+      ES_{0.975}^{Norm} = 2.33780279 * sigma
+    as well as subadditivity and pre-trade Marginal VaR sizing.
+    """
+    # 1. Exact closed-form Gaussian identity check on synthetic zero-mean unit-vol series
+    rng = np.random.default_rng(123)
+    n = 5000
+    raw = rng.standard_normal(n)
+    raw = (raw - np.mean(raw)) / np.std(raw, ddof=1) * 0.01  # exact mu=0, sigma=0.01
+    df_syn = pd.DataFrame({"A": raw})
+    w_syn = {"A": 1.0}
+
+    est_99 = parametric_normal_var_es(df_syn, w_syn, alpha=0.99, notional_usd=1.0, lookback_days=n, zero_mean=True)
+    est_975 = parametric_normal_var_es(df_syn, w_syn, alpha=0.975, notional_usd=1.0, lookback_days=n, zero_mean=True)
+
+    assert np.isclose(est_99.var_pct / 0.01, 2.32634787, atol=1e-5)
+    assert np.isclose(est_975.es_pct / 0.01, 2.33780279, atol=1e-5)
+    assert est_99.es_usd > est_99.var_usd
+
+    # 2. Subadditivity & diversification check on actual portfolio
+    cfg = load_config()
+    bundle = prepare_and_save_processed_data(cfg)
+    div_df, coherence_proof = compute_subadditivity_and_diversification(
+        bundle["arith_returns"], cfg["portfolio"]["weights"], alpha=0.99
+    )
+    benefit_row = div_df[div_df["Position"] == "Diversification Benefit ($ Saved)"].iloc[0]
+    assert benefit_row["Normal_VaR_99_USD"] > 0.0
+    assert benefit_row["HS_VaR_99_USD"] > 0.0
+    assert coherence_proof["var_violates_subadditivity"] is True
+    assert coherence_proof["es_satisfies_subadditivity"] is True
+
+    # 3. Component VaR sums to total Parametric Normal VaR & TSLA trade sizer hits exact cap
+    sizing = compute_pretrade_marginal_var_sizing(
+        bundle["arith_returns"],
+        base_weights=cfg["portfolio"]["weights"],
+        candidate_ticker="TSLA",
+        cro_var_99_limit_usd=200_000.0,
+    )
+    comp_sum = sizing["component_var_table"]["Component_VaR_99_USD"].sum()
+    assert np.isclose(comp_sum, sizing["baseline_normal_var_99_usd"], rtol=1e-6)
+    assert sizing["max_allowable_tsla_normal_usd"] > 0.0
+    assert sizing["max_allowable_tsla_hs_usd"] > 0.0

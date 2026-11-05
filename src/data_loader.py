@@ -96,13 +96,13 @@ def _generate_realistic_institutional_history(
             drift_spy[i] = -0.00075
             drift_tlt[i] = -0.00135
         elif yr in (2023, 2024, 2025):
-            vol_target[i] = 0.95
-            spy_tlt_corr[i] = 0.22 if yr == 2023 else -0.18
+            vol_target[i] = 0.78 if yr >= 2024 else 0.92
+            spy_tlt_corr[i] = 0.22 if yr == 2023 else -0.22
             drift_spy[i] = 0.00068
-            drift_tlt[i] = 0.00005
+            drift_tlt[i] = 0.00008
 
-    # Baseline daily volatilities: SPY (~15.5% ann), AAPL (~25% ann), TLT (~14.5% ann), GLD (~13.5% ann), TSLA (~52% ann)
-    base_vols = np.array([0.0098, 0.0158, 0.0092, 0.0085, 0.0325], dtype=np.float64)
+    # Baseline daily volatilities: SPY (~14.5% ann), AAPL (~23.5% ann), TLT (~13.8% ann), GLD (~12.8% ann), TSLA (~50% ann)
+    base_vols = np.array([0.0091, 0.0148, 0.0086, 0.0080, 0.0315], dtype=np.float64)
     rets = np.zeros((n, 5), dtype=np.float64)
     h_var = np.ones(n, dtype=np.float64)
     z_prev_sq = 1.0
