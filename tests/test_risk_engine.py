@@ -34,6 +34,13 @@ from src.var_estimators import (
     parametric_normal_var_es,
     parametric_student_t_var_es,
 )
+from src.volatility_models import (
+    age_weighted_hs_var_es,
+    build_dynamic_var_series,
+    compute_ewma_volatility,
+    fit_garch11_volatility,
+    volatility_weighted_hs_var_es,
+)
 
 
 def test_cpp17_kernel_loaded_and_put_call_parity():
@@ -121,7 +128,6 @@ def test_phase1_closed_form_identities_and_subadditivity():
       ES_{0.975}^{Norm} = 2.33780279 * sigma
     as well as subadditivity and pre-trade Marginal VaR sizing.
     """
-    # 1. Exact closed-form Gaussian identity check on synthetic zero-mean unit-vol series
     rng = np.random.default_rng(123)
     n = 5000
     raw = rng.standard_normal(n)
@@ -136,7 +142,6 @@ def test_phase1_closed_form_identities_and_subadditivity():
     assert np.isclose(est_975.es_pct / 0.01, 2.33780279, atol=1e-5)
     assert est_99.es_usd > est_99.var_usd
 
-    # 2. Subadditivity & diversification check on actual portfolio
     cfg = load_config()
     bundle = prepare_and_save_processed_data(cfg)
     div_df, coherence_proof = compute_subadditivity_and_diversification(
@@ -148,7 +153,6 @@ def test_phase1_closed_form_identities_and_subadditivity():
     assert coherence_proof["var_violates_subadditivity"] is True
     assert coherence_proof["es_satisfies_subadditivity"] is True
 
-    # 3. Component VaR sums to total Parametric Normal VaR & TSLA trade sizer hits exact cap
     sizing = compute_pretrade_marginal_var_sizing(
         bundle["arith_returns"],
         base_weights=cfg["portfolio"]["weights"],
@@ -159,3 +163,37 @@ def test_phase1_closed_form_identities_and_subadditivity():
     assert np.isclose(comp_sum, sizing["baseline_normal_var_99_usd"], rtol=1e-6)
     assert sizing["max_allowable_tsla_normal_usd"] > 0.0
     assert sizing["max_allowable_tsla_hs_usd"] > 0.0
+
+
+def test_phase2_ewma_garch_and_hull_white_vwhs():
+    """
+    Verify RiskMetrics EWMA recursion, GARCH(1,1) stationarity (alpha_1 + beta_1 < 1),
+    and that Hull-White Volatility-Weighted HS can exceed the maximum historical loss
+    in the lookback window when current volatility spikes.
+    """
+    cfg = load_config()
+    bundle = prepare_and_save_processed_data(cfg)
+    port_ret = bundle["portfolio"]["portfolio_arith_return"]
+
+    # 1. EWMA Volatility
+    ewma_s = compute_ewma_volatility(port_ret, lambda_decay=0.94)
+    assert len(ewma_s) == len(port_ret)
+    assert (ewma_s > 0).all()
+
+    # 2. GARCH(1,1) Stationarity
+    g_norm = fit_garch11_volatility(port_ret, dist="normal")
+    g_t = fit_garch11_volatility(port_ret, dist="t")
+    assert 0.50 < g_norm["params"]["persistence"] < 1.0
+    assert 0.50 < g_t["params"]["persistence"] < 1.0
+    assert g_t["params"]["nu_df"] > 2.5
+
+    # 3. Hull-White VWHS exceeding max window loss when sigma_T > max(sigma_i)
+    win_r = np.array([-0.02, -0.015, -0.01, 0.005, 0.01] * 50, dtype=np.float64)
+    win_v = np.full_like(win_r, 0.01)
+    # Suppose current volatility forecast spikes to 0.025 (2.5x historical window vol)
+    hw_var, hw_es = volatility_weighted_hs_var_es(
+        win_r, win_v, current_vol_forecast=0.025, alpha=0.99, notional_usd=10_000_000.0
+    )
+    max_unscaled_loss = np.max(-win_r) * 10_000_000.0  # $200,000
+    assert hw_var > max_unscaled_loss, "Hull-White VWHS must exceed max historical window loss during a vol spike"
+    assert hw_es >= hw_var
