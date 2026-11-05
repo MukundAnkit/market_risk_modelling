@@ -1,0 +1,81 @@
+# ==============================================================================
+# Multi-Asset Macro Trading Desk — Portfolio & Risk Governance Configuration
+# ==============================================================================
+
+portfolio:
+  name: "USD 10M Multi-Asset Macro Trading Desk"
+  notional_usd: 10000000.0
+  base_currency: "USD"
+  weights:
+    SPY: 0.30   # S&P 500 Index ETF ($3,000,000) - Broad US Equity Beta
+    AAPL: 0.20  # Apple Inc. ($2,000,000) - Concentrated Single-Stock Equity Risk
+    TLT: 0.30   # iShares 20+ Year Treasury Bond ETF ($3,000,000) - Rates Duration
+    GLD: 0.20   # SPDR Gold Trust ($2,000,000) - Inflation & Tail-Crisis Hedge
+
+candidate_trades:
+  TSLA:
+    description: "Pre-trade Marginal/Incremental VaR sizing candidate (Volatile Single Stock)"
+    ticker: "TSLA"
+
+governance:
+  holding_period_days: 1
+  confidence_levels:
+    - 0.95
+    - 0.99
+  cro_limits:
+    var_99_1d_usd: 200000.0   # 2.0% of $10M NAV
+    es_99_1d_usd: 280000.0    # 2.8% of $10M NAV
+    var_99_1d_pct: 0.020
+    es_99_1d_pct: 0.028
+
+data:
+  start_date: "2015-01-01"
+  end_date: "2026-01-01"
+  core_tickers:
+    - "SPY"
+    - "AAPL"
+    - "TLT"
+    - "GLD"
+  extended_tickers:
+    - "TSLA"
+  vix_csv_url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+  max_ffill_days: 1
+  trading_days_per_year: 252
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+
+models:
+  historical_simulation:
+    lookback_windows:
+      - 250
+      - 500
+    bootstrap_replications: 1000
+    random_seed: 42
+  monte_carlo:
+    num_scenarios_phase1: 10000
+    num_scenarios_phase4: 20000
+    random_seed: 42
+  volatility:
+    rolling_window: 20
+    correlation_window: 60
+    ewma_lambda: 0.94
+    age_weighted_lambda: 0.98
+    garch_p: 1
+    garch_q: 1
+  backtesting:
+    out_of_sample_days: 1500
+    estimation_window: 250
+    basel_window: 250
+    kupiec_alpha: 0.05
+    christoffersen_alpha: 0.05
+
+derivatives:
+  underlying_ticker: "SPY"
+  risk_free_rate: 0.045
+  dividend_yield: 0.013
+  time_to_expiry_days: 30
+  protective_put_moneyness: 0.95   # 5% OTM Put Hedge
+  straddle_moneyness: 1.00         # ATM Delta-Neutral Straddle
+  stress_grid:
+    spot_shocks_pct: [-0.20, -0.10, -0.05, 0.0, 0.10]
+    vol_shocks_pts: [-0.05, 0.0, 0.05, 0.15, 0.25]
