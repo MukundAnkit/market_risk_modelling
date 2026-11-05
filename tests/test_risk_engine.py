@@ -24,6 +24,15 @@ from src.data_loader import (
     prepare_and_save_processed_data,
     slice_point_in_time,
 )
+from src.derivatives_stress import (
+    bsm_greeks,
+    bsm_price,
+    build_2d_stress_vulnerability_grid,
+    compare_derivative_var_approaches,
+    generate_spy_option_chain_snapshot,
+    run_historical_crisis_replay,
+    solve_implied_volatility,
+)
 from src.eda_diagnostics import (
     compute_qq_coordinates,
     compute_rolling_stock_bond_correlation,
@@ -207,12 +216,10 @@ def test_phase3_kupiec_and_christoffersen_spaced_vs_clustered():
     Verify Basel Traffic Light zones, Kupiec POF test (LR_UC = 0 when x/N == 1 - alpha),
     and Christoffersen Markov Independence test distinguishing spaced vs. clustered exceptions.
     """
-    # 1. Basel Traffic Light zones
     assert classify_basel_traffic_light(3)["zone"] == "Green"
     assert classify_basel_traffic_light(7)["zone"] == "Yellow"
     assert classify_basel_traffic_light(12)["zone"] == "Red"
 
-    # 2. Spaced vs. Clustered Hit Sequences with identical 10 breaches out of 1,000 days (alpha=0.99)
     n_days = 1000
     spaced_hits = np.zeros(n_days, dtype=np.int32)
     spaced_hits[np.arange(50, 1000, 100)] = 1  # 10 evenly spaced breaches (n11 = 0)
@@ -224,13 +231,11 @@ def test_phase3_kupiec_and_christoffersen_spaced_vs_clustered():
     res_spaced = christoffersen_markov_tests(spaced_hits, alpha=0.99)
     res_clustered = christoffersen_markov_tests(clustered_hits, alpha=0.99)
 
-    # Both have exact 1% breach rate => LR_UC == 0.0 and pass Kupiec coverage
     assert np.isclose(res_spaced["lr_uc"], 0.0, atol=1e-12)
     assert np.isclose(res_clustered["lr_uc"], 0.0, atol=1e-12)
     assert res_spaced["reject_uc_5pct"] is False
     assert res_clustered["reject_uc_5pct"] is False
 
-    # Spaced passes independence (n11=0), while Clustered strongly rejects independence & conditional coverage
     assert res_spaced["n11"] == 0
     assert res_spaced["reject_ind_5pct"] is False
     assert res_spaced["reject_cc_5pct"] is False
@@ -238,3 +243,40 @@ def test_phase3_kupiec_and_christoffersen_spaced_vs_clustered():
     assert res_clustered["n11"] == 8
     assert res_clustered["reject_ind_5pct"] is True
     assert res_clustered["reject_cc_5pct"] is True
+
+
+def test_phase4_bsm_iv_solver_straddle_convexity_and_stress_grids():
+    """
+    Verify BSM Implied Volatility inversion accuracy, Delta-Normal failure on a
+    Delta-Neutral Straddle (Delta-Normal VaR ~ 0 vs. Full Revaluation MC VaR > 0),
+    and Protective Put tail-loss reduction in historical & hypothetical stress tests.
+    """
+    # 1. IV Inversion round-trip accuracy
+    S, K, r, q, true_sigma, T = 500.0, 480.0, 0.045, 0.013, 0.215, 30.0 / 365.0
+    for is_call in (True, False):
+        mkt_p = bsm_price(S, K, r, q, true_sigma, T, is_call=is_call)
+        solved_iv = solve_implied_volatility(mkt_p, S, K, r, q, T, is_call=is_call)
+        assert np.isclose(solved_iv, true_sigma, atol=1e-7)
+
+    # 2. Option chain snapshot & skew verification
+    chain = generate_spy_option_chain_snapshot(spot_price=500.0)
+    assert chain["IV_Inversion_Error"].max() < 1e-6
+
+    # 3. Delta-Normal vs. Delta-Gamma-Vega vs. Full Revaluation MC on Delta-Neutral Straddle
+    comp_df, _ = compare_derivative_var_approaches(spot_price=500.0, num_mc_scenarios=10_000)
+    short_straddle = comp_df[comp_df["Portfolio_Structure"].str.contains("Short Delta-Neutral Straddle")].iloc[0]
+    assert np.isclose(short_straddle["Net_Delta_Shares"], 0.0, atol=1e-6)
+    assert np.isclose(short_straddle["Delta_Normal_VaR_99_USD"], 0.0, atol=1e-6)
+    assert short_straddle["Delta_Gamma_Vega_VaR_99_USD"] > 30_000.0
+    assert short_straddle["Full_Reval_MC_VaR_99_USD"] > 30_000.0
+    assert np.isclose(
+        short_straddle["Delta_Gamma_Vega_VaR_99_USD"],
+        short_straddle["Full_Reval_MC_VaR_99_USD"],
+        rtol=0.10,
+    )
+
+    # 4. Stress Grid: Protective Put reduces loss in severe crash (-20% spot, +25 vol pts)
+    unhedged_grid, hedged_grid = build_2d_stress_vulnerability_grid(spot_price=500.0)
+    crash_unhedged = unhedged_grid.loc["Spot -20%", "IV +25 pts"]
+    crash_hedged = hedged_grid.loc["Spot -20%", "IV +25 pts"]
+    assert crash_hedged > crash_unhedged, "Protective put must cushion portfolio loss during a -20% crash"
