@@ -8,6 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.backtesting import (
+    christoffersen_markov_tests,
+    classify_basel_traffic_light,
+    generate_hit_sequence,
+    kupiec_pof_test,
+    run_champion_challenger_backtest,
+)
 from src.cpp_kernel import bsm_greeks_fast, bsm_price_fast, ewma_volatility_fast, get_kernel
 from src.data_loader import (
     align_trading_calendar,
@@ -175,25 +182,59 @@ def test_phase2_ewma_garch_and_hull_white_vwhs():
     bundle = prepare_and_save_processed_data(cfg)
     port_ret = bundle["portfolio"]["portfolio_arith_return"]
 
-    # 1. EWMA Volatility
     ewma_s = compute_ewma_volatility(port_ret, lambda_decay=0.94)
     assert len(ewma_s) == len(port_ret)
     assert (ewma_s > 0).all()
 
-    # 2. GARCH(1,1) Stationarity
     g_norm = fit_garch11_volatility(port_ret, dist="normal")
     g_t = fit_garch11_volatility(port_ret, dist="t")
     assert 0.50 < g_norm["params"]["persistence"] < 1.0
     assert 0.50 < g_t["params"]["persistence"] < 1.0
     assert g_t["params"]["nu_df"] > 2.5
 
-    # 3. Hull-White VWHS exceeding max window loss when sigma_T > max(sigma_i)
     win_r = np.array([-0.02, -0.015, -0.01, 0.005, 0.01] * 50, dtype=np.float64)
     win_v = np.full_like(win_r, 0.01)
-    # Suppose current volatility forecast spikes to 0.025 (2.5x historical window vol)
     hw_var, hw_es = volatility_weighted_hs_var_es(
         win_r, win_v, current_vol_forecast=0.025, alpha=0.99, notional_usd=10_000_000.0
     )
     max_unscaled_loss = np.max(-win_r) * 10_000_000.0  # $200,000
     assert hw_var > max_unscaled_loss, "Hull-White VWHS must exceed max historical window loss during a vol spike"
     assert hw_es >= hw_var
+
+
+def test_phase3_kupiec_and_christoffersen_spaced_vs_clustered():
+    """
+    Verify Basel Traffic Light zones, Kupiec POF test (LR_UC = 0 when x/N == 1 - alpha),
+    and Christoffersen Markov Independence test distinguishing spaced vs. clustered exceptions.
+    """
+    # 1. Basel Traffic Light zones
+    assert classify_basel_traffic_light(3)["zone"] == "Green"
+    assert classify_basel_traffic_light(7)["zone"] == "Yellow"
+    assert classify_basel_traffic_light(12)["zone"] == "Red"
+
+    # 2. Spaced vs. Clustered Hit Sequences with identical 10 breaches out of 1,000 days (alpha=0.99)
+    n_days = 1000
+    spaced_hits = np.zeros(n_days, dtype=np.int32)
+    spaced_hits[np.arange(50, 1000, 100)] = 1  # 10 evenly spaced breaches (n11 = 0)
+
+    clustered_hits = np.zeros(n_days, dtype=np.int32)
+    clustered_hits[100:105] = 1  # 5 consecutive breaches
+    clustered_hits[500:505] = 1  # 5 consecutive breaches (n11 = 8)
+
+    res_spaced = christoffersen_markov_tests(spaced_hits, alpha=0.99)
+    res_clustered = christoffersen_markov_tests(clustered_hits, alpha=0.99)
+
+    # Both have exact 1% breach rate => LR_UC == 0.0 and pass Kupiec coverage
+    assert np.isclose(res_spaced["lr_uc"], 0.0, atol=1e-12)
+    assert np.isclose(res_clustered["lr_uc"], 0.0, atol=1e-12)
+    assert res_spaced["reject_uc_5pct"] is False
+    assert res_clustered["reject_uc_5pct"] is False
+
+    # Spaced passes independence (n11=0), while Clustered strongly rejects independence & conditional coverage
+    assert res_spaced["n11"] == 0
+    assert res_spaced["reject_ind_5pct"] is False
+    assert res_spaced["reject_cc_5pct"] is False
+
+    assert res_clustered["n11"] == 8
+    assert res_clustered["reject_ind_5pct"] is True
+    assert res_clustered["reject_cc_5pct"] is True

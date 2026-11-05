@@ -273,9 +273,12 @@ def build_dynamic_var_series(
         sigma_gn_t = float(garch_norm_vol[t])
         garch_norm_var = (-garch_norm_fit["params"]["mu_daily"] + z_alpha * sigma_gn_t) * notional_usd
 
-        # 5. GARCH(1,1) Student-t VaR
+        # 5. GARCH(1,1) Student-t VaR (with FHS standardized residual tail adjustment)
         sigma_gt_t = float(garch_t_vol[t])
-        garch_t_var = (-garch_t_fit["params"]["mu_daily"] + t_scale_mult * sigma_gt_t) * notional_usd
+        win_std_res = -r_vals[t - lookback_days : t] / np.maximum(garch_t_vol[t - lookback_days : t], 1e-8)
+        emp_z_q = float(np.quantile(win_std_res, alpha))
+        q_mult = max(t_scale_mult, emp_z_q)
+        garch_t_var = (-garch_t_fit["params"]["mu_daily"] + q_mult * sigma_gt_t) * notional_usd
 
         # 6. Age-Weighted HS (BRW)
         age_hs_var, _ = age_weighted_hs_var_es(
