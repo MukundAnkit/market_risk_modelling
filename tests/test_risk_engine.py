@@ -309,3 +309,62 @@ def test_phase4_bsm_iv_solver_straddle_swap_and_stressed_var():
     crash_unhedged = unhedged_grid.loc["Spot -20%", "IV +25 pts"]
     crash_hedged = hedged_grid.loc["Spot -20%", "IV +25 pts"]
     assert crash_hedged > crash_unhedged, "Protective put must cushion portfolio loss during a -20% crash"
+
+
+def test_phase5_ima_five_pillars_rniv_irc_irrbb_and_frtb():
+    """
+    Verify Phase 5 IMA Regulatory Capital coverage across all 5 asset classes (Equity, Credit,
+    Rates, FX, Inflation), RNIV capital add-ons, 1-Year 99.9% Merton Copula IRC & Economic Capital,
+    6-shock Basel IRRBB (Delta EVE & Delta NII), and FRTB Liquidity-Horizon-Adjusted 97.5% ES.
+    """
+    from src.regulatory_capital_frtb import (
+        build_ima_regulatory_capital_bridge,
+        compute_five_pillar_var_attribution,
+        compute_frtb_liquidity_adjusted_es,
+        compute_rniv_capital_addons,
+        evaluate_irrbb_supervisory_shocks,
+        simulate_irc_and_economic_capital,
+    )
+
+    cfg = load_config()
+    bundle = prepare_and_save_processed_data(cfg)
+    arith_rets = bundle["arith_returns"]
+    vix_df = bundle["vix"]
+
+    # 1. Verify all 5 IMA risk factor pillars (Equity, Credit, Rates, FX, Inflation)
+    assert {"SPY", "AAPL", "TLT", "FXE", "LQD", "TIP", "GLD"}.issubset(set(arith_rets.columns))
+    inst_df, pillar_df = compute_five_pillar_var_attribution(arith_rets, notional_usd=10_000_000.0, alpha=0.99)
+    assert set(pillar_df["Risk_Class_Pillar"]) == {"Equity", "Credit", "Rates", "FX", "Inflation"}
+    assert np.isclose(pillar_df["Share_of_Total_VaR_pct"].sum(), 100.0, atol=1e-5)
+    assert pillar_df["Diversification_Benefit_USD"].sum() > 50_000.0
+
+    # 2. Verify RNIV (Risks Not In VaR) across Vol Skew, Yield Curve Basis, and Credit Basis
+    rniv_df, rniv_sum = compute_rniv_capital_addons(arith_rets, vix_df, alpha=0.99)
+    assert len(rniv_df) == 3
+    assert rniv_sum["total_rniv_capital_charge_usd"] > 200_000.0
+    assert rniv_sum["total_stressed_rniv_1d_99_var_usd"] > rniv_sum["total_rniv_1d_99_var_usd"]
+
+    # 3. Verify 1-Year 99.9% IRC (Default + Migration >= Default-Only DRC) & Economic Capital
+    issuer_df, irc_ec = simulate_irc_and_economic_capital(num_simulations=20_000, seed=42)
+    assert len(issuer_df) == 6
+    assert irc_ec["irc_default_plus_migration_999_usd"] >= irc_ec["drc_default_only_999_usd"] > 0.0
+    assert irc_ec["irc_es_999_usd"] >= irc_ec["irc_default_plus_migration_999_usd"]
+    assert irc_ec["ec_diversification_benefit_usd"] > 100_000.0
+
+    # 4. Verify IRRBB (6 Basel d368 shocks: Delta EVE & Delta NII + ALCO Swap Hedge)
+    gap_df, irrbb_df = evaluate_irrbb_supervisory_shocks(tier1_capital_usd=15_000_000.0)
+    assert len(gap_df) == 8
+    assert len(irrbb_df) == 6
+    assert irrbb_df["Unhedged_Delta_EVE_USD"].min() < -0.15 * 15_000_000.0
+    assert irrbb_df["Basel_15pct_Outlier_Pass"].all()
+
+    # 5. Verify FRTB Liquidity-Horizon-Adjusted 97.5% ES & Capital Bridge
+    frtb_df, frtb_sum = compute_frtb_liquidity_adjusted_es(arith_rets, vix_df, notional_usd=10_000_000.0)
+    assert len(frtb_df) == 3
+    assert frtb_sum["frtb_liquidity_adjusted_es_current_usd"] > frtb_sum["es_975_10d_unadjusted_current_usd"] > frtb_sum["es_975_1d_current_usd"]
+    assert frtb_sum["frtb_liquidity_adjusted_es_stressed_usd"] > frtb_sum["frtb_liquidity_adjusted_es_current_usd"]
+
+    bridge_df = build_ima_regulatory_capital_bridge(arith_rets, vix_df, notional_usd=10_000_000.0)
+    assert len(bridge_df) == 4
+    assert bridge_df.iloc[-1]["Basel_2_5_IMA_Capital_USD"] > 1_000_000.0
+    assert bridge_df.iloc[-1]["FRTB_IMA_Capital_USD"] > 1_000_000.0

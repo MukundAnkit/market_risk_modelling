@@ -17,6 +17,14 @@ portfolio:
     TLT: 0.25   # US Long-Duration Sovereign Rates ($2,500,000)
     FXE: 0.15   # EUR/USD Foreign Exchange Currency Exposure ($1,500,000)
     GLD: 0.15   # Safe-Haven Gold Commodity ($1,500,000)
+  ima_five_pillar_weights:
+    SPY: 0.22   # Equity Pillar: US Large-Cap Equities ($2,200,000)
+    AAPL: 0.13  # Equity Pillar: US Single-Stock Tech ($1,300,000)
+    TLT: 0.20   # Rates Pillar: US 20+ Yr Sovereign Treasury Duration ($2,000,000)
+    FXE: 0.15   # FX Pillar: EUR/USD G10 Spot Foreign Exchange ($1,500,000)
+    LQD: 0.15   # Credit Pillar: US Investment-Grade Corporate Credit Spreads ($1,500,000)
+    TIP: 0.10   # Inflation Pillar: US TIPS Real Yield & Inflation Breakeven ($1,000,000)
+    GLD: 0.05   # Inflation/Commodity Pillar: Gold Safe-Haven ($500,000)
 
 candidate_trades:
   TSLA:
@@ -25,6 +33,12 @@ candidate_trades:
   FXE:
     description: "EUR/USD Foreign Exchange risk factor sleeve (CurrencyShares Euro Trust / Spot EURUSD)"
     ticker: "FXE"
+  LQD:
+    description: "US Investment-Grade Corporate Bond ETF (Credit Spread Risk Pillar)"
+    ticker: "LQD"
+  TIP:
+    description: "iShares TIPS Bond ETF (Inflation Breakeven & Real Rates Risk Pillar)"
+    ticker: "TIP"
 
 governance:
   holding_period_days: 1
@@ -48,6 +62,8 @@ data:
   extended_tickers:
     - "TSLA"
     - "FXE"
+    - "LQD"
+    - "TIP"
   vix_csv_url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
   max_ffill_days: 1
   trading_days_per_year: 252

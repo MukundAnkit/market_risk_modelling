@@ -400,10 +400,94 @@ Under Basel 2.5, internal market risk models must compute **Stressed VaR ($\text
 
 As shown in Figure 12 (right panel), calibrating the $\$10\text{M}$ desk over the **2020 COVID-19 stress window** yields a 1-Day 99% **$\text{sVaR}$ of $\$338,666.16$ ($3.49\times$ the 2017 Normal-Period VaR of $\$97,075.31$)**, and calibrating over the **2022 Rate-Hike stock-bond selloff** yields **$\$261,257.27$ ($2.69\times$ Normal VaR)**. Meanwhile, in the $5 \times 5$ Spot $\times$ Implied Volatility stress grid (Figure 11), hedging the $\$3\text{M}$ `SPY` sleeve with a 5% OTM Protective Put saves **$\$442,489$ ($47.6\%$)** in the extreme `Spot -20%, IV +25 pts` crash cell while preserving **$97.3\%$ of bull-market upside**.
 
-## 7. Synthesis of Model Governance Recommendations and Primary References
+## 7. Phase 5: IMA Regulatory Capital (`RNIV`, `IRC`), Enterprise Economic Capital, `IRRBB` and `FRTB` Transition
 
-* **Linear Multi-Asset Risk Engine (Champion Tier):** Deploy **$\text{EGARCH}(1,1)$ Filtered Historical Simulation (FHS)** and **Hull-White (1998) Volatility-Weighted Historical Simulation (VWHS)** for daily CRO VaR and ES limit enforcement ($18$ breaches over 1,500 OOS days, $n_{11}=0$, $p_{CC}=0.604$, Basel Green Zone).
-* **Derivatives & Swap Revaluation:** Prohibit linear Delta-Normal VaR on option portfolios and linear DV01 under $>100\text{ bps}$ rate shocks; enforce **C++17 Full Revaluation Monte Carlo** alongside Basel 2.5 Stressed VaR ($\text{sVaR}_{0.99}$).
+### 7.1 Five-Pillar IMA Asset-Class Coverage: Equity, Credit, Rates, FX and Inflation
+
+Under the Basel Internal Models Approach ([BCBS Market Risk Framework](https://www.bis.org/bcbs/publ/d457.htm)), an institutional market risk engine must capture general and specific risk across five primary risk factor pillars: **Interest Rates (`TLT`)**, **Foreign Exchange (`FXE`)**, **Credit Spread (`LQD`)**, **Inflation (`TIP` + `GLD`)**, and **Equity (`SPY` + `AAPL`)**. In [`src/regulatory_capital_frtb.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/regulatory_capital_frtb.py) (`compute_five_pillar_var_attribution`), the USD 10,000,000 trading book is decomposed across all five pillars using exact Euler Component VaR and Historical Simulation tail attribution:
+
+| IMA Risk Factor Pillar | Representative Proxies & Weights | Allocation (USD) | Standalone 99% VaR | Euler Component 99% VaR | % Share of Total VaR | Historical Sim 99% VaR | Historical Sim 99% ES |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Equity Risk** | `SPY` (22%) + `AAPL` (13%) | $3,500,000 | $86,781.91 | **$82,223.53** | **68.95%** | $88,430.36 | $95,976.76 |
+| **Credit Spread Risk** | `LQD` Investment-Grade Corp Bonds (15%) | $1,500,000 | $24,492.41 | **$12,089.15** | **10.14%** | $25,676.33 | $31,422.58 |
+| **Interest Rate Risk** | `TLT` 20+ Yr US Treasuries (20%) | $2,000,000 | $36,639.82 | **$10,814.36** | **9.07%** | $42,191.58 | $44,506.45 |
+| **Foreign Exchange (FX)** | `FXE` Spot EUR/USD (15%) | $1,500,000 | $23,809.40 | **$7,817.46** | **6.56%** | $26,389.15 | $31,329.39 |
+| **Inflation Risk** | `TIP` TIPS (10%) + `GLD` Gold (5%) | $1,500,000 | $20,808.80 | **$6,301.88** | **5.28%** | $21,558.47 | $24,693.92 |
+| **Undiversified Sum** | Sum of 5 Standalone Pillars | $10,000,000 | $192,532.33 | — | — | $204,245.90 | $227,929.10 |
+| **Diversified 5-Pillar Book** | **Cross-Asset IMA Trading Desk** | **$10,000,000** | **$119,246.38** | **$119,246.38** | **100.00%** | **$116,133.48** | **$138,763.95** |
+| **Diversification Benefit** | **Cross-Pillar Risk Reduction** | — | **-$73,285.95 (-38.1%)** | — | — | **-$88,112.42 (-43.1%)** | **-$89,165.14 (-39.1%)** |
+
+Cross-asset correlation across the five pillars reduces 1-Day 99% Parametric VaR by **$38.1\%$ ($\$73,285.95$)** and 1-Day 99% Historical Simulation VaR by **$43.1\%$ ($\$88,112.42$)**.
+
+### 7.2 RNIV (Risks Not In VaR) Identification, Quantification and Capital Add-On Framework
+
+Under UK PRA Supervisory Statement SS13/13 and Basel 2.5 IMA governance, risk factors or basis risks that are omitted or incompletely captured by the core VaR engine must be isolated and capitalized under an explicit **RNIV (Risks Not In VaR)** framework (`compute_rniv_capital_addons` in [`src/regulatory_capital_frtb.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/regulatory_capital_frtb.py)):
+
+$$\text{Capital}_{\text{RNIV}} = \sqrt{10} \times \left( \text{RNIV}_{99\%, 1\text{d}} + \text{sRNIV}_{99\%, 1\text{d}} \right)$$
+
+| Unmodeled / Basis Risk Module | Underlying Portfolio Exposure | 1-Day 99% RNIV | 1-Day 99% Stressed RNIV ($\text{sRNIV}$) | 10-Day Combined RNIV Capital Add-On | Share of RNIV |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **Equity Volatility Smile / Skew Surface Basis** | `SPY` 5% OTM Put ($6,000\text{ sh}$) + Short Straddle ($\mathcal{V}_{1\%} = \$6,855$) | $4,000.99 | $12,147.68 | **$48,446.04** | 16.30% |
+| **Yield-Curve Tenor (2s10s30s) & Convexity Basis** | $5\text{M}$ 5Y Pay-Fixed IRS ($\text{DV01} = \$2,233/\text{bp}$) vs. $20\text{Y}$ `TLT` | $13,081.28 | $41,710.50 | **$164,375.35** | 55.32% |
+| **Credit Index-to-Single-Name Dispersion Basis** | $1.5\text{M}$ `LQD` IG Credit Index vs. Single-Name Issuers | $7,269.61 | $20,840.70 | **$84,330.93** | 28.38% |
+| **Total Desk RNIV Capital Add-On** | **Sum across 3 Unmodeled Basis Modules** | **$24,351.89** | **$74,698.88** | **$297,152.32** | **100.00%** |
+
+### 7.3 Incremental Risk Charge (IRC) and Enterprise Economic Capital (1-Year 99.9% Merton Factor Copula)
+
+To prevent regulatory arbitrage between the Trading Book and Banking Book for credit-sensitive positions, Basel 2.5 requires an **Incremental Risk Charge (IRC)** over a **1-Year capital horizon at the $\alpha = 99.9\%$ confidence level** covering both **obligor default ($\text{PD}_i \times \text{LGD}_i$)** and **credit rating migration spread widening ($\Delta V_{i, \text{mig}} = -\text{Dur}_i \cdot \text{EAD}_i \cdot \Delta s_{i, r_0 \to r_1}$)**. In [`src/regulatory_capital_frtb.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/regulatory_capital_frtb.py) (`simulate_irc_and_economic_capital`), we implement a [Merton (1974)](https://doi.org/10.2307/2978959) Single-Factor Gaussian Copula ($M = 50,000$ simulations) across a USD 3,000,000 6-issuer corporate credit portfolio (`AAPL` AA, `MSFT` AAA, `JPM` A, `BAC` A, `BBB_CORP` BBB, `BB_HIGH_YIELD` BB):
+
+$$A_i = \sqrt{\rho_i} Z_{\text{sys}} + \sqrt{1 - \rho_i} \varepsilon_i, \qquad Z_{\text{sys}}, \varepsilon_i \stackrel{\text{i.i.d.}}{\sim} \mathcal{N}(0, 1)$$
+
+Furthermore, we aggregate the 1-Year credit portfolio loss distribution with the 1-Year fat-tailed Student-$t$ ($\nu = 7.1$) market risk loss distribution ($\rho_{\text{mkt, credit}} = 0.42$) to compute **1-Year 99.9% Enterprise Economic Capital (EC)**:
+
+| Credit / Economic Capital Metric | Horizon & Confidence | Point Estimate (USD) | Governance & Regulatory Interpretation |
+| :--- | :---: | :---: | :--- |
+| **Expected Credit Loss ($\text{EL}_{\text{credit}}$)** | 1-Year Mean | $26,768.82 | Priced into credit spreads / baseline provisions |
+| **FRTB Default Risk Charge (DRC, Default-Only)** | 1-Year 99.9% | **$460,000.00** | Captures jump-to-default ($\text{PD} \times \text{LGD}$) without migration |
+| **Basel 2.5 Incremental Risk Charge (IRC)** | **1-Year 99.9%** | **$503,000.00** | **Full Default + Credit Rating Migration Charge (Migration Share = 8.55%)** |
+| **IRC Expected Shortfall ($\text{ES}_{99.9\%}^{\text{IRC}}$)** | 1-Year 99.9% | $577,305.69 | Tail expectation beyond the 99.9% credit migration quantile |
+| **Standalone Market Risk Economic Capital** | 1-Year 99.9% | $1,738,781.89 | 1-Year fat-tailed market shock capital requirement |
+| **Standalone Credit Unexpected Loss ($\text{UL}_{\text{credit}}$)** | 1-Year 99.9% | $476,231.18 | $\text{IRC}_{99.9\%} - \text{EL}_{\text{credit}}$ |
+| **Diversified Total Enterprise Economic Capital** | **1-Year 99.9%** | **$1,814,058.64** | **Saves $400,954.44 (-18.1%) via Inter-Risk Diversification** |
+
+![5-Pillar IMA VaR Attribution and 1-Year 99.9% Merton Copula IRC Distribution](figures/fig13_five_pillar_and_irc_ec.png)
+
+### 7.4 Interest Rate Risk in the Banking Book (`IRRBB`): $\Delta\text{EVE}$ and $\Delta\text{NII}$ Across 6 Supervisory Shocks
+
+To support Asset-Liability Committee (ALCO) governance under [BCBS d368 IRRBB Standards (2016)](https://www.bis.org/bcbs/publ/d368.htm), [`src/regulatory_capital_frtb.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/regulatory_capital_frtb.py) (`evaluate_irrbb_supervisory_shocks`) models a **USD 100,000,000 Banking Book** (USD 15,000,000 Tier-1 Capital) across 10 maturity buckets ($1\text{M}$ to $20\text{Y}$: fixed-rate mortgages, commercial loans, floating SOFR loans, non-maturity CASA deposits with $0.35$ pass-through beta, and term deposits), hedged with a **USD 10,000,000 5-Year Pay-Fixed ALCO Interest-Rate Swap**:
+
+| BCBS d368 Supervisory Rate Shock | Unhedged $\Delta\text{EVE}$ (USD) | Unhedged % Tier-1 | 5Y ALCO Swap Hedge $\Delta\text{PV}$ | Hedged $\Delta\text{EVE}$ (USD) | Hedged % Tier-1 (Limit -15%) | 1-Year $\Delta\text{NII}$ (USD) | Outlier Test |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1. Parallel Shock Up (+200 bps)** | -$3,088,345.64 | **-20.59% (BREACH)** | +$848,683.46 | **-$2,239,662.19** | **-14.93%** | +$111,335.80 | **PASS** |
+| **2. Parallel Shock Down (-200 bps)** | +$3,815,969.08 | +25.44% | -$936,053.50 | **+$2,879,915.58** | +19.20% | -$292,585.80 | **PASS** |
+| **3. Steepener (Short Down / Long Up)** | -$2,728,735.14 | **-18.19% (BREACH)** | +$633,572.60 | **-$2,095,162.54** | **-13.97%** | -$231,419.65 | **PASS** |
+| **4. Flattener (Short Up / Long Down)** | +$2,835,519.68 | +18.90% | -$541,515.10 | **+$2,294,004.58** | +15.29% | +$182,429.21 | **PASS** |
+| **5. Short Rate Shock Up (+250 bps)** | -$665,263.75 | -4.44% | +$145,253.88 | **-$520,009.87** | -3.47% | +$192,163.93 | **PASS** |
+| **6. Short Rate Shock Down (-250 bps)** | +$708,582.13 | +4.72% | -$149,544.57 | **+$559,037.56** | +3.73% | -$284,001.18 | **PASS** |
+
+Without the ALCO swap hedge, a $+200\text{ bps}$ Parallel Up shock causes Economic Value of Equity to fall by $-\$3,088,345.64$ (**$-20.59\%$ of Tier-1 Capital**), breaching the Basel $-15\%$ supervisory outlier threshold. Adding the USD 10M 5-Year Pay-Fixed ALCO Swap generates $+\$848,683.46$ in offsetting gain, restoring Hedged $\Delta\text{EVE}$ to **$-14.93\%$ of Tier-1 Capital (PASS)** while generating $+\$111,335.80$ in positive 1-Year Net Interest Income ($\Delta\text{NII}$).
+
+### 7.5 Transition to FRTB (BCBS d457): Liquidity-Horizon-Adjusted $97.5\%$ ES & Total IMA Capital Bridge
+
+Under the [Fundamental Review of the Trading Book (BCBS d457)](https://www.bis.org/bcbs/publ/d457.htm), internal models transition from 10-day 99% VaR + Stressed VaR to **97.5% Expected Shortfall ($\text{ES}_{0.975}$)** scaled across differentiated **regulatory Liquidity Horizons ($LH_k \in \{10, 20, 40, 60, 120\}$ days)** (`compute_frtb_liquidity_adjusted_es` in [`src/regulatory_capital_frtb.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/regulatory_capital_frtb.py)):
+
+$$\text{ES}_{LH} = \sqrt{ \left(\text{ES}_{T_{\text{base}}}(P)\right)^2 + \sum_{j \ge 2} \left( \text{ES}_{T_{\text{base}}}(P, j) \sqrt{\frac{LH_j - LH_{j-1}}{T_{\text{base}}}} \right)^2 }, \qquad T_{\text{base}} = 10\text{ days}$$
+
+Assigning $LH = 10\text{d}$ to Sovereign Rates (`TLT`), Inflation (`TIP`), Spot FX (`FXE`), and Large-Cap Equities (`SPY`, `AAPL`), $LH = 20\text{d}$ to Gold (`GLD`), and $LH = 40\text{d}$ to Investment-Grade Credit Spreads (`LQD`) increases 10-day Current $97.5\%$ ES from $\$386,714.63$ to **$\$427,390.53$ ($+10.52\%$ liquidity-horizon add-on)** and Stressed $97.5\%$ ES (calibrated to the 2020 COVID crisis) to **$\$962,410.19$**. Applying the [Acerbi and Székely (2014)](https://doi.org/10.21314/JOR.2014.301) $Z_2$ Expected Shortfall backtest over our 1,500-day out-of-sample window confirms that our $\text{EGARCH}(1,1)$ FHS Champion model achieves **$Z_2 = -0.0725$ ($p = 0.4711$, PASS)** at 97.5% ES, whereas Static Normal fails ($Z_2 = -0.7859, p = 0.0098$).
+
+| Regulatory Capital Component | Basel 2.5 IMA Formula / Rule | Basel 2.5 IMA Capital (USD) | FRTB IMA (BCBS d457) Counterpart | FRTB IMA Capital (USD) | Regime Shift ($\Delta$ USD) |
+| :--- | :--- | :---: | :--- | :---: | :---: |
+| **1. General & Specific Market Risk** | $m_c \sqrt{10}\,\text{VaR}_{99\%} + m_s \sqrt{10}\,\text{sVaR}_{99\%}$ ($m=3$) | **$3,518,591.29** | $\text{IMCC} = 1.5 \times \text{ES}_{97.5\%, LH}^{\text{Stressed}}$ | **$1,443,615.28** | -$2,074,976.00 |
+| **2. Credit Migration & Default Risk** | **IRC** (1-Year 99.9% Default + Migration) | **$503,000.00** | **DRC** (1-Year 99.9% Default-Only) | **$460,000.00** | -$43,000.00 |
+| **3. Unmodeled / Residual Basis Risk** | **RNIV** ($\sqrt{10} \times (\text{RNIV}_{1\text{d}} + \text{sRNIV}_{1\text{d}})$) | **$297,152.32** | **RRAO + NMRF** (Residual Risk Add-On) | **$148,576.16** | -$148,576.16 |
+| **Total IMA Regulatory Capital** | **Total Basel 2.5 IMA Pillar-1 Capital** | **$4,318,743.60** | **Total FRTB IMA Pillar-1 Capital** | **$2,052,191.44** | **-$2,266,552.16** |
+
+![IRRBB Supervisory Shocks and Basel 2.5 vs. FRTB Regulatory Capital Bridge](figures/fig14_irrbb_and_frtb_capital_bridge.png)
+
+## 8. Synthesis of Model Governance Recommendations and Primary References
+
+* **Linear Multi-Asset Risk Engine (Champion Tier):** Deploy **$\text{EGARCH}(1,1)$ Filtered Historical Simulation (FHS)** and **Hull-White (1998) Volatility-Weighted Historical Simulation (VWHS)** across all five IMA asset classes (`Equity, Credit, Rates, FX, Inflation`) for daily CRO VaR and ES limit enforcement ($18$ breaches over 1,500 OOS days, $n_{11}=0$, $p_{CC}=0.604$, Acerbi-Székely $Z_2 = -0.0725, p = 0.471$, Basel Green Zone).
+* **Derivatives, Swap Revaluation, RNIV, IRC, IRRBB & FRTB:** Enforce **C++17 Full Revaluation Monte Carlo** alongside Basel 2.5 Stressed VaR ($\text{sVaR}_{0.99}$), capitalize unmodeled skew/curve/credit basis under **RNIV ($\$297.2\text{k}$)**, govern credit migration/default under the **1-Year 99.9% Merton Copula IRC ($\$503.0\text{k}$)** and **Enterprise Economic Capital ($\$1.81\text{M}$)**, hedge Banking Book duration via the **5Y ALCO Swap (`IRRBB` $\Delta\text{EVE} = -14.93\%$ Tier-1)**, and transition trading book capital to **FRTB Liquidity-Adjusted $97.5\%$ ES (`IMCC` + `DRC` + `RRAO`)**.
 
 ### References
 * **Acerbi, C., and Székely, B. (2014).** [Backtesting Expected Shortfall](https://doi.org/10.21314/JOR.2014.301). *Risk Magazine*, December 2014, pp. 76–81.
@@ -411,6 +495,7 @@ As shown in Figure 12 (right panel), calibrating the $\$10\text{M}$ desk over th
 * **Artzner, P., Delbaen, F., Eber, J.-M., and Heath, D. (1999).** [Coherent Measures of Risk](https://doi.org/10.1111/1467-9965.00068). *Mathematical Finance*, 9(3), pp. 203–228.
 * **Barone-Adesi, G., Giannopoulos, K., and Vosper, L. (1999).** [VaR Without Correlations for Portfolios of Derivative Securities](https://doi.org/10.3905/jod.1999.319129). *Journal of Futures Markets*, 19(5), pp. 583–602.
 * **Basel Committee on Banking Supervision (1996).** [Supervisory Framework for the Use of "Backtesting" in Conjunction with the Internal Models Approach to Market Risk Capital Requirements](https://www.bis.org/publ/bcbs22.htm). Bank for International Settlements.
+* **Basel Committee on Banking Supervision (2016).** [Interest Rate Risk in the Banking Book (IRRBB)](https://www.bis.org/bcbs/publ/d368.htm). Bank for International Settlements, d368.
 * **Basel Committee on Banking Supervision (2019).** [Minimum Capital Requirements for Market Risk (FRTB)](https://www.bis.org/bcbs/publ/d457.htm). Bank for International Settlements, d457.
 * **Black, F., and Scholes, M. (1973).** [The Pricing of Options and Corporate Liabilities](https://doi.org/10.1086/260062). *Journal of Political Economy*, 81(3), pp. 637–654.
 * **Bollerslev, T. (1986).** [Generalized Autoregressive Conditional Heteroskedasticity](https://doi.org/10.1016/0304-4076(86)90063-1). *Journal of Econometrics*, 31(3), pp. 307–327.
@@ -420,4 +505,5 @@ As shown in Figure 12 (right panel), calibrating the $\$10\text{M}$ desk over th
 * **Dickey, D. A., and Fuller, W. A. (1979).** [Distribution of the Estimators for Autoregressive Time Series with a Unit Root](https://doi.org/10.2307/2286348). *JASA*, 74(366a), pp. 427–431.
 * **Hull, J., and White, A. (1998).** [Incorporating Volatility Updating into the Historical Simulation Method for Value-at-Risk](https://doi.org/10.21314/JOR.1998.004). *Journal of Risk*, 1(1), pp. 5–19.
 * **Kupiec, P. H. (1995).** [Techniques for Verifying the Accuracy of Risk Measurement Models](https://doi.org/10.3905/jod.1995.407942). *Journal of Derivatives*, 3(2), pp. 73–84.
+* **Merton, R. C. (1974).** [On the Pricing of Corporate Debt: The Risk Structure of Interest Rates](https://doi.org/10.2307/2978959). *Journal of Finance*, 29(2), pp. 449–470.
 * **Nelson, D. B. (1991).** [Conditional Heteroskedasticity in Asset Returns: A New Approach](https://doi.org/10.2307/2938260). *Econometrica*, 59(2), pp. 347–370.

@@ -3,7 +3,7 @@ Data Ingestion, Calendar Alignment & Return Transformation Pipeline (`src/data_l
 
 Enforces strict data hygiene rules:
 1. Total-return Adjusted Close extraction (`Adj Close`) to eliminate split/dividend artifacts.
-2. NYSE trading calendar inner-join across all assets (`SPY`, `AAPL`, `TLT`, `GLD`, `TSLA`, `FXE`)
+2. NYSE trading calendar inner-join across all assets (`SPY`, `AAPL`, `TLT`, `GLD`, `TSLA`, `FXE`, `LQD`, `TIP`)
    with at most 1-day forward fill.
 3. Strict point-in-time slicing (`slice_point_in_time`) to prevent look-ahead bias (`F_{t-1}`).
 4. Local Parquet caching (`data/raw/*.parquet` and `data/processed/*.parquet`) for 100% offline reproducibility.
@@ -45,7 +45,8 @@ def _generate_realistic_institutional_history(
       - Feb-Apr 2020 COVID-19 crash (VIX spike to 82.69, SPY -34%, flight-to-quality TLT rally, negative SPY-TLT corr)
       - 2022 inflation & Fed rate-hike bear market (positive SPY-TLT correlation +0.52, simultaneous stock-bond selloff,
         and strong USD rally / EURUSD (`FXE`) parity drawdown)
-      - Stationary GARCH(1,1) volatility clustering (alpha=0.13, beta=0.82) + fat-tailed skewed Student-t innovations
+      - Full 5-pillar coverage: Equity (`SPY`, `AAPL`, `TSLA`), Rates (`TLT`), FX (`FXE`), Credit (`LQD`),
+        and Inflation (`TIP`, `GLD`).
     """
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range(start=start_date, end=end_date, freq="B")
@@ -161,28 +162,42 @@ def _generate_realistic_institutional_history(
         )
         rets[t] = np.clip(drifts + (base_vols * h_scale_t) * z_corr, -0.18, 0.18)
 
-    # Generate EUR/USD Foreign Exchange sleeve (`FXE`) using a dedicated secondary RNG stream
+    # Generate FX (`FXE`), Credit (`LQD`), and Inflation (`TIP`) sleeves using a dedicated secondary RNG stream
     # so the first 5 assets (`SPY`, `AAPL`, `TLT`, `GLD`, `TSLA`) and `VIX` remain 100% bit-for-bit identical
-    rng_fx = np.random.default_rng(seed + 101)
-    fx_base_vol = 0.0048  # ~7.6% annualized EUR/USD volatility
-    fx_innov = rng_fx.standard_t(df=6.5, size=n) * np.sqrt((6.5 - 2.0) / 6.5)
-    fx_innov = np.clip(fx_innov, -5.0, 5.0)
-    # EUR/USD is positively correlated with Gold (GLD, Dollar inverse) and pro-risk SPY in 2022 USD rally
-    std_gld = rets[:, 3] / base_vols[3]
+    rng_ext = np.random.default_rng(seed + 101)
     std_spy = rets[:, 0] / base_vols[0]
+    std_tlt = rets[:, 2] / base_vols[2]
+    std_gld = rets[:, 3] / base_vols[3]
+
+    # 1. FXE (EUR/USD Foreign Exchange): ~7.6% ann vol
+    fx_base_vol = 0.0048
+    fx_innov = np.clip(rng_ext.standard_t(df=6.5, size=n) * np.sqrt((6.5 - 2.0) / 6.5), -5.0, 5.0)
     fx_z = 0.36 * std_gld + 0.22 * std_spy + np.sqrt(max(1.0 - 0.36**2 - 0.22**2, 0.1)) * fx_innov
     fx_drift = np.where(dates.year == 2022, -0.00035, 0.00004)
     fx_rets = np.clip(fx_drift + fx_base_vol * np.sqrt(np.clip(h_var, 0.4, 4.0)) * fx_z, -0.045, 0.045)
 
-    all_rets = np.column_stack([rets, fx_rets])
+    # 2. LQD (Investment-Grade Corporate Credit): driven by Rates duration (TLT) + Equity/Credit spread beta (SPY)
+    # In March 2020 credit liquidity freeze, LQD sold off with SPY despite TLT rally!
+    lqd_base_vol = 0.0056  # ~8.9% ann vol
+    lqd_innov = np.clip(rng_ext.standard_t(df=5.2, size=n) * np.sqrt((5.2 - 2.0) / 5.2), -5.5, 5.0)
+    lqd_z = 0.62 * std_tlt + 0.44 * std_spy + 0.65 * lqd_innov
+    lqd_rets = np.clip(0.00015 + lqd_base_vol * np.sqrt(np.clip(h_var, 0.4, 5.0)) * lqd_z, -0.065, 0.065)
 
-    # Construct price series from initial Jan 2015 levels (FXE ~ $118.0 in Jan 2015)
-    p0 = np.array([175.0, 24.5, 115.0, 114.0, 15.0, 118.0], dtype=np.float64)
+    # 3. TIP (US TIPS / Inflation Breakeven): driven by real rates (TLT) + inflation expectations (GLD)
+    tip_base_vol = 0.0042  # ~6.7% ann vol
+    tip_innov = np.clip(rng_ext.standard_t(df=6.0, size=n) * np.sqrt((6.0 - 2.0) / 6.0), -5.0, 5.0)
+    tip_z = 0.68 * std_tlt + 0.32 * std_gld + 0.65 * tip_innov
+    tip_rets = np.clip(0.00014 + tip_base_vol * np.sqrt(np.clip(h_var, 0.4, 4.0)) * tip_z, -0.045, 0.045)
+
+    all_rets = np.column_stack([rets, fx_rets, lqd_rets, tip_rets])
+
+    # Construct price series from initial Jan 2015 levels
+    p0 = np.array([175.0, 24.5, 115.0, 114.0, 15.0, 118.0, 102.0, 98.0], dtype=np.float64)
     prices_mat = p0 * np.exp(np.cumsum(np.log1p(all_rets), axis=0))
     prices_df = pd.DataFrame(
         prices_mat,
         index=dates,
-        columns=["SPY", "AAPL", "TLT", "GLD", "TSLA", "FXE"],
+        columns=["SPY", "AAPL", "TLT", "GLD", "TSLA", "FXE", "LQD", "TIP"],
     )
     prices_df.index.name = "Date"
 
@@ -216,7 +231,7 @@ def fetch_and_cache_market_data(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Fetch (or load from local Parquet cache) daily Adjusted Close prices for
-    core + extended tickers (`SPY`, `AAPL`, `TLT`, `GLD`, `TSLA`, `FXE`) and Cboe `VIX`.
+    core + extended tickers (`SPY`, `AAPL`, `TLT`, `GLD`, `TSLA`, `FXE`, `LQD`, `TIP`) and Cboe `VIX`.
     """
     cfg = config or load_config()
     data_cfg = cfg["data"]
