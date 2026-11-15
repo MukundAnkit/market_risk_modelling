@@ -1,20 +1,19 @@
-# Institutional Market Risk Modelling, Backtesting and Derivatives Stress-Testing Technical Whitepaper
+# Multi-Asset VaR and ES Engine with Backtesting and Derivatives Revaluation — Technical Whitepaper
 
 ## 1. Trading Desk Governance Mandate, System Architecture and Point-in-Time Data Engineering
 
-### 1.1 Institutional Trading Desk Mandate and Risk Governance Limits
+### 1.1 Institutional Trading Desk Mandate and Risk Governance Limits across Equity, Rates, FX and Gold
 
-Quantitative risk management within an institutional multi-asset trading operation exists to enforce capital allocation discipline, size pre-trade exposures, and preserve solvency across tranquil and stressed market regimes. Rather than treating risk metrics as abstract statistical outputs, the risk engine documented in this technical whitepaper governs a **USD 10,000,000 Multi-Asset Macro Trading Desk** defined in [`config/portfolio.yaml`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/config/portfolio.yaml). The desk holds a strategic cross-asset allocation designed to capture broad equity market beta, concentrated single-stock growth exposure, sovereign fixed-income duration, and safe-haven commodity protection.
+Quantitative risk management within an institutional multi-asset trading operation exists to enforce capital allocation discipline, size pre-trade exposures, and preserve solvency across tranquil and stressed market regimes. Rather than treating risk metrics as abstract statistical outputs, the risk engine documented in this technical whitepaper governs a **USD 10,000,000 Multi-Asset Macro Trading Desk** defined in [`config/portfolio.yaml`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/config/portfolio.yaml). The desk supports both a 4-asset core macro book (`SPY` 30%, `AAPL` 20%, `TLT` 30%, `GLD` 20%) and a 5-asset FX-inclusive cross-asset sleeve incorporating **Foreign Exchange (`FXE` / Spot `EUR/USD`)** alongside US Equities (`SPY`, `AAPL`), Sovereign Interest Rates (`TLT`), and Safe-Haven Gold (`GLD`), as well as pre-trade tactical additions in volatile single-stock equities (**Tesla Inc., `TSLA`**) and non-linear derivatives (`SPY` options and a **USD 5,000,000 5-Year Pay-Fixed USD Interest-Rate Swap**).
 
-Specifically, the USD 10,000,000 notional capital ($V_0 = \$10,000,000$) is allocated across four liquid exchange-traded instruments: **30% in the S&P 500 Index ETF (`SPY`, USD 3,000,000)** representing core US equity market beta; **20% in Apple Inc. (`AAPL`, USD 2,000,000)** representing concentrated single-name technology risk; **30% in the iShares 20+ Year US Treasury Bond ETF (`TLT`, USD 3,000,000)** introducing long-duration sovereign interest-rate sensitivity and potential equity-bond diversification; and **20% in the SPDR Gold Trust (`GLD`, USD 2,000,000)** providing inflation and tail-crisis hedging behavior. In addition, the desk evaluates pre-trade tactical additions in volatile single-stock equities (**Tesla Inc., `TSLA`**) and non-linear equity index options on `SPY` (30-day 5% out-of-the-money protective puts and at-the-money delta-neutral straddles).
-
-| Asset Ticker | Asset Class & Risk Factor Role | Portfolio Weight ($w_i$) | Dollar Notional Allocation ($V_i$) | Primary Risk Sensitivity |
+| Asset Ticker | Asset Class & Risk Factor Role | Core 4-Asset Weight | Extended FX-Macro Weight | Primary Risk Sensitivity |
 | :--- | :--- | :---: | :---: | :--- |
-| **SPY** | US Large-Cap Equities (S&P 500 Index ETF) | 30.0% | $3,000,000 | Broad US Equity Beta & Implied Volatility (VIX) |
-| **AAPL** | US Technology Single-Stock Equity (Apple Inc.) | 20.0% | $2,000,000 | Equity Beta + Idiosyncratic Single-Stock Tail Risk |
-| **TLT** | US Long-Duration Sovereign Bonds (20+ Yr Treasury ETF) | 30.0% | $3,000,000 | Long-End Treasury Yield Duration & Term Premium |
-| **GLD** | Precious Metals / Safe-Haven Commodity (Gold Trust) | 20.0% | $2,000,000 | Real Interest Rates, USD & Geopolitical Tail Hedge |
-| **Total Portfolio** | **Multi-Asset Macro Trading Book** | **100.0%** | **$10,000,000** | **Cross-Asset Volatility & Correlation Regimes** |
+| **SPY** | US Large-Cap Equities (S&P 500 Index ETF) | 30.0% ($3.0M) | 30.0% ($3.0M) | Broad US Equity Beta & Implied Volatility (VIX) |
+| **AAPL** | US Technology Single-Stock Equity (Apple Inc.) | 20.0% ($2.0M) | 15.0% ($1.5M) | Equity Beta + Idiosyncratic Single-Stock Tail Risk |
+| **TLT** | US Long-Duration Sovereign Bonds (20+ Yr Treasury ETF) | 30.0% ($3.0M) | 25.0% ($2.5M) | Long-End Treasury Yield Duration & Term Premium |
+| **FXE** | Foreign Exchange Risk Factor (CurrencyShares Euro / EURUSD) | — | 15.0% ($1.5M) | G10 Foreign Exchange Spot Rate & Interest Differential |
+| **GLD** | Precious Metals / Safe-Haven Commodity (Gold Trust) | 20.0% ($2.0M) | 15.0% ($1.5M) | Real Interest Rates, USD & Geopolitical Tail Hedge |
+| **Total Portfolio** | **Multi-Asset Macro Trading Book** | **100.0% ($10.0M)** | **100.0% ($10.0M)** | **Cross-Asset Volatility & Correlation Regimes** |
 
 The Chief Risk Officer (CRO) enforces two binding daily governance limits over a 1-trading-day holding period ($\Delta t = 1\text{ day}$) at the $\alpha = 99\%$ confidence level, in alignment with the [Basel Committee on Banking Supervision (BCBS) Market Risk Framework](https://www.bis.org/bcbs/publ/d457.htm):
 1. **1-Day 99% Value-at-Risk (VaR) Limit:** $\text{VaR}_{0.99, 1\text{d}} \le \text{USD } 200,000$ ($2.00\%$ of portfolio Net Asset Value).
@@ -28,19 +27,20 @@ A central architectural design principle of this framework is the separation of 
 
 | Architectural Layer | Source Module / File | Core Responsibilities & Mathematical Scope |
 | :--- | :--- | :--- |
-| **Governance Configuration** | [`config/portfolio.yaml`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/config/portfolio.yaml) | Stores portfolio weights, $10M notional, CRO VaR/ES limits, lookback windows, decay factors, and stress grids. |
+| **Governance Configuration** | [`config/portfolio.yaml`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/config/portfolio.yaml) | Stores portfolio weights (core 4-asset & 5-asset FX-macro), $10M notional, CRO VaR/ES limits, lookback windows, decay factors, 5Y IRS parameters, and stress grids. |
 | **Native C++17 Kernel** | [`src/cpp/quant_core.cpp`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/cpp/quant_core.cpp)<br>[`src/cpp_kernel.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/cpp_kernel.py) | Compiled with `-O3 -std=c++17 -shared -fPIC`; executes Black-Scholes-Merton pricing, analytical Greeks, safeguarded Newton-Bisection implied volatility inversion, vectorized Full Revaluation Monte Carlo, and EWMA recursion. |
-| **Data & Point-in-Time Pipeline** | [`src/data_loader.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/data_loader.py) | Extracts total-return adjusted closes, aligns NYSE trading calendars, caches Apache Parquet matrices (`data/raw/` and `data/processed/`), and enforces strict $\mathcal{F}_{t-1}$ point-in-time slicing. |
+| **Data & Point-in-Time Pipeline** | [`src/data_loader.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/data_loader.py) | Extracts total-return adjusted closes across Equities (`SPY`, `AAPL`, `TSLA`), Rates (`TLT`), FX (`FXE`), and Gold (`GLD`), aligns NYSE trading calendars, caches Apache Parquet matrices (`data/raw/` and `data/processed/`), and enforces strict $\mathcal{F}_{t-1}$ point-in-time slicing. |
 | **Phase 0: EDA & Stylized Facts** | [`src/eda_diagnostics.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/eda_diagnostics.py)<br>[`00_data_hygiene_and_eda.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/00_data_hygiene_and_eda.ipynb) | Runs Augmented Dickey-Fuller (ADF) unit-root tests, Jarque-Bera normality tests, sample moment and tail-frequency diagnostics, Q-Q plots, and rolling regime correlation analysis. |
 | **Phase 1: Baseline VaR & ES** | [`src/var_estimators.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/var_estimators.py)<br>[`01_baseline_var_and_es.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/01_baseline_var_and_es.ipynb) | Implements Plain Historical Simulation (with bootstrap SE), Parametric Normal, Lognormal, MLE Student-$t$, Cornish-Fisher, Cholesky Monte Carlo, subadditivity proofs, and `TSLA` Marginal VaR trade sizing. |
-| **Phase 2: Volatility Regimes** | [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py)<br>[`02_volatility_regimes_and_ewma_garch.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/02_volatility_regimes_and_ewma_garch.ipynb) | Diagnoses the 250-day "Ghost Effect"; implements RiskMetrics EWMA ($\lambda=0.94$), $\text{GARCH}(1,1)$ (Normal & Student-$t$), Age-Weighted HS (BRW), and Hull-White Volatility-Weighted HS. |
+| **Phase 2: Volatility Regimes & EGARCH FHS** | [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py)<br>[`02_volatility_regimes_and_ewma_garch.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/02_volatility_regimes_and_ewma_garch.ipynb) | Diagnoses the 250-day "Ghost Effect"; implements RiskMetrics EWMA ($\lambda=0.94$), $\text{GARCH}(1,1)$ (Normal & Student-$t$), asymmetric **$\text{EGARCH}(1,1)$ Filtered Historical Simulation (FHS)**, Age-Weighted HS (BRW), and Hull-White Volatility-Weighted HS. |
 | **Phase 3: Model Backtesting** | [`src/backtesting.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/backtesting.py)<br>[`03_model_backtesting_and_validation.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/03_model_backtesting_and_validation.ipynb) | Evaluates 1,500 out-of-sample trading days across Basel Traffic Light zones, Kupiec POF unconditional coverage ($LR_{UC}$), and Christoffersen Markov independence & conditional coverage ($LR_{IND}, LR_{CC}$). |
-| **Phase 4: Derivatives & Stress** | [`src/derivatives_stress.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/derivatives_stress.py)<br>[`04_derivatives_and_stress_testing.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/04_derivatives_and_stress_testing.ipynb) | Evaluates `SPY` option volatility skew, analytical Greeks, Delta-Normal vs. Delta-Gamma-Vega vs. Full Revaluation MC, 2020/2022 historical crisis replays, and $5 \times 5$ spot-volatility stress grids. |
-| **Automated Verification** | [`tests/test_risk_engine.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/tests/test_risk_engine.py) | Verifies closed-form mathematical identities, put-call parity, zero look-ahead slicing, subadditivity counterexamples, and backtesting discrimination via `pytest`. |
+| **Phase 4: Derivatives, IRS & Stressed VaR** | [`src/derivatives_stress.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/derivatives_stress.py)<br>[`04_derivatives_and_stress_testing.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/04_derivatives_and_stress_testing.ipynb) | Evaluates `SPY` option volatility skew, analytical Greeks, 5-Year USD Interest-Rate Swap valuation & DV01/Convexity breakdown, Delta-Normal vs. Delta-Gamma-Vega vs. Full Revaluation MC, **Basel 2.5 Stressed VaR ($\text{sVaR}$)**, 2020/2022 crisis replays, and $5 \times 5$ stress grids. |
+| **End-to-End Master Showcase** | [`05_end_to_end_var_es_backtesting_derivatives_showcase.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/05_end_to_end_var_es_backtesting_derivatives_showcase.ipynb) | Runs all four phases (Multi-Asset Data, VaR/ES + EGARCH FHS, Backtesting, and Options + Swap Revaluation + Stressed VaR) in a single unified showcase notebook. |
+| **Automated Verification** | [`tests/test_risk_engine.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/tests/test_risk_engine.py) | Verifies closed-form mathematical identities, put-call parity, zero look-ahead slicing, subadditivity counterexamples, EGARCH FHS, 5Y IRS convexity, Stressed VaR, and backtesting discrimination via `pytest`. |
 
 ### 1.3 Data Hygiene Rules, Return Transformations and Zero Look-Ahead Slicing
 
-Quantitative risk models are highly sensitive to data corruption. Unadjusted stock splits or dividend distributions create artificial single-day price drops that corrupt empirical tail quantiles and inflate GARCH variance parameters. To guarantee institutional data integrity, [`src/data_loader.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/data_loader.py) enforces three mandatory data hygiene rules across the 11-year historical sample spanning **January 1, 2015 to December 31, 2025** ($N = 2,797$ aligned daily return observations across `SPY`, `AAPL`, `TLT`, `GLD`, `TSLA`, and the [Cboe Volatility Index (`VIX`)](https://www.cboe.com/tradable_products/vix/)).
+Quantitative risk models are highly sensitive to data corruption. Unadjusted stock splits or dividend distributions create artificial single-day price drops that corrupt empirical tail quantiles and inflate GARCH variance parameters. To guarantee institutional data integrity, [`src/data_loader.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/data_loader.py) enforces three mandatory data hygiene rules across the 11-year historical sample spanning **January 1, 2015 to December 31, 2025** ($N = 2,797$ aligned daily return observations across `SPY`, `AAPL`, `TLT`, `GLD`, `TSLA`, `FXE`, and the [Cboe Volatility Index (`VIX`)](https://www.cboe.com/tradable_products/vix/)).
 
 First, all asset price series use **Total-Return Adjusted Close (`Adj Close`)** prices so that corporate actions, cash dividends, and split adjustments are smoothly incorporated into the total return index. Second, all asset prices and the Cboe VIX index are inner-joined on common NYSE trading dates, allowing at most 1 consecutive trading day of forward-filling (`max_ffill_days: 1`) before computing returns. Third, every risk forecast $\text{VaR}_{\alpha, t}$ or conditional volatility parameter $\hat{\sigma}_{t \mid t-1}$ generated for trading date $t$ is strictly conditioned on the historical information set up to the close of trading day $t-1$, denoted $\mathcal{F}_{t-1} = \{r_1, r_2, \dots, r_{t-1}\}$. In [`src/data_loader.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/data_loader.py), the helper function `slice_point_in_time(df, target_date, lookback_days)` enforces the strict inequality `df.index < pd.Timestamp(target_date)` so that contemporaneous return realizations on day $t$ can never leak into ex-ante risk forecasts.
 
@@ -89,7 +89,7 @@ Classical portfolio theory and baseline RiskMetrics variance-covariance models a
 
 $$S = \mathbb{E}\left[\left(\frac{r_t - \mu}{\sigma}\right)^3\right] = 0, \qquad K = \mathbb{E}\left[\left(\frac{r_t - \mu}{\sigma}\right)^4\right] = 3, \qquad K_{\text{excess}} = K - 3 = 0$$
 
-Furthermore, under a standard normal distribution, the two-sided probability of observing a daily return shock exceeding three standard deviations ($|z_t| = |(r_t - \mu)/\sigma| > 3.0$) is only $2 \times [1 - \Phi(3.0)] = 0.0026998$ ($0.270\%$), or roughly once every $370$ trading days (~1.5 years). To test whether empirical asset and portfolio returns conform to this Gaussian benchmark, [`src/eda_diagnostics.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/eda_diagnostics.py) computes the unbiased sample moments, the empirical frequency of $>3\sigma$ tail events, and the **Jarque-Bera (JB) test statistic** ([Jarque and Bera, 1987](https://doi.org/10.1111/j.1467-9892.1980.tb00297.x)):
+Furthermore, under a standard normal distribution, the two-sided probability of observing a daily return shock exceeding three standard deviations ($|z_t| = |(r_t - \mu)/\sigma| > 3.0$) is only $2 \times [1 - \Phi(3.0)] = 0.0026998$ ($0.270\%$), or roughly once every $370$ trading days (~1.5 years). To test whether empirical asset and portfolio returns conform to this Gaussian benchmark, [`src/eda_diagnostics.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/eda_diagnostics.py) computes the unbiased sample moments, the empirical frequency of $>3\sigma$ tail events, and the **Jarque-Bera (JB) test statistic** ([Jarque and Bera, 1987](https://doi.org/10.2307/1403192)):
 
 $$\text{JB} = \frac{N}{6}\left(\hat{S}^2 + \frac{\hat{K}_{\text{excess}}^2}{4}\right) \xrightarrow{d} \chi^2_2 \quad \text{under } \mathcal{H}_0: r_t \sim \mathcal{N}(\mu, \sigma^2)$$
 
@@ -265,7 +265,7 @@ When a portfolio manager proposes adding a new position of size $\Delta x_{\text
 
 **Modeller's Progression Decision (Phase 1 $\rightarrow$ Phase 2):** While Phase 1 successfully captures unconditional fat tails and cross-sectional marginal risk, every estimator in Phase 1 relies on an **equally weighted rolling window** ($w_t = 1/n$). In Phase 2, we investigate how equally weighted windows behave dynamically across calm and crisis regimes and replace static windowing with conditional time-series volatility models.
 
-## 4. Phase 2 (Walk): Time-Series Volatility Regimes and Dynamic Historical Simulation
+## 4. Phase 2 (Walk): Time-Series Volatility Regimes, Asymmetric EGARCH(1,1) FHS and Dynamic Historical Simulation
 
 ### 4.1 Diagnosing the Structural Flaw of Equally Weighted Windows: The 250-Day "Ghost Effect"
 
@@ -277,119 +277,66 @@ In an equally weighted $n = 250$-day rolling window, every historical return obs
 
 Figure 5 (from [`02_volatility_regimes_and_ewma_garch.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/02_volatility_regimes_and_ewma_garch.ipynb)) captures this exact phenomenon on our USD 10,000,000 portfolio across 2020–2021. Following the March 2020 crash, the dark blue curve (**Plain Historical Simulation 250d**) jumps to **$\$343,189$** and sits completely flat as a rigid horizontal plateau from late March 2020 until mid-March 2021—forcing the trading desk to hold excessive risk capital throughout the calm H2 2020 recovery—before dropping off a vertical cliff back below $\$150,000$ in March 2021.
 
-### 4.2 Parametric Time-Series Upgrades: RiskMetrics EWMA and GARCH(1,1)
+### 4.2 Parametric and Asymmetric Time-Series Upgrades: RiskMetrics EWMA, GARCH(1,1) and Nelson (1991) EGARCH(1,1)
 
-To eliminate the ghost effect and capture volatility clustering dynamically, [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py) implements two parametric conditional variance models conditioned strictly on $\mathcal{F}_{t-1}$:
+To eliminate the ghost effect and capture volatility clustering dynamically, [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py) implements three conditional variance models conditioned strictly on $\mathcal{F}_{t-1}$:
 
 #### 1. RiskMetrics Exponentially Weighted Moving Average (EWMA, $\lambda = 0.94$)
 Executed in native C++17 (`cpp_ewma_volatility` in [`src/cpp/quant_core.cpp`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/cpp/quant_core.cpp)), the RiskMetrics EWMA variance forecast $\hat{\sigma}_{t \mid t-1}^2$ assigns exponentially decaying weights to past squared returns with decay factor $\lambda = 0.94$ ([J.P. Morgan / Reuters, 1996](https://www.msci.com/documents/10199/5915b101-4206-4ba0-aee2-3449d5c7e95a)):
 
 $$\hat{\sigma}_{t \mid t-1}^2 = \lambda \hat{\sigma}_{t-1 \mid t-2}^2 + (1 - \lambda) r_{p, t-1}^2 = (1 - \lambda) \sum_{j=1}^{\infty} \lambda^{j-1} r_{p, t-j}^2$$
 
-Under EWMA, the effective half-life of a volatility shock is $\frac{\ln(0.5)}{\ln(0.94)} \approx 11.2$ trading days, allowing the risk forecast to spike immediately on the day after a shock and decay smoothly without cliff effects. However, notice that EWMA is an integrated $\text{IGARCH}(1,1)$ specification ($\alpha_1 + \beta_1 = (1-\lambda) + \lambda = 1.0$) with no long-run unconditional mean-reversion level.
-
 #### 2. Bollerslev (1986) $\text{GARCH}(1,1)$ with Normal and Student-$t$ Innovations
 To incorporate mean reversion toward a long-run unconditional variance $\bar{\sigma}^2 = \frac{\omega}{1 - \alpha_1 - \beta_1}$, [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py) estimates a $\text{GARCH}(1,1)$ model via Maximum Likelihood using the `arch` library ([Bollerslev, 1986](https://doi.org/10.1016/0304-4076(86)90063-1)) under both Gaussian ($\eta_t \sim \mathcal{N}(0,1)$) and standardized Student-$t$ ($\eta_t \sim t_\nu(0, 1)$) innovations:
 
 $$r_{p,t} = \mu + \varepsilon_t, \qquad \varepsilon_t = \sigma_t \eta_t, \qquad \hat{\sigma}_{t \mid t-1}^2 = \omega + \alpha_1 \varepsilon_{t-1}^2 + \beta_1 \hat{\sigma}_{t-1 \mid t-2}^2$$
 
-where stationarity requires $\omega > 0$, $\alpha_1 \ge 0$, $\beta_1 \ge 0$, and persistence $\alpha_1 + \beta_1 < 1$.
+#### 3. Nelson (1991) Asymmetric Exponential $\text{EGARCH}(1,1)$ & Filtered Historical Simulation (FHS)
+Standard $\text{GARCH}(1,1)$ enters past return innovations quadratically ($\varepsilon_{t-1}^2$), imposing symmetry between positive and negative shocks of equal magnitude. Drawing on the econometric methodology from Master's thesis research on interbank rate spreads, [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py) (`fit_egarch11_volatility` and `egarch_filtered_hs_var_es`) estimates [Nelson's (1991) Exponential GARCH ($\text{EGARCH}(1,1)$)](https://doi.org/10.2307/2938260) in log-variance space:
 
-| Model Specification | Daily Mean ($\hat{\mu}$) | Intercept ($\hat{\omega}$) | ARCH Shock ($\hat{\alpha}_1$) | GARCH Decay ($\hat{\beta}_1$) | Persistence ($\hat{\alpha}_1 + \hat{\beta}_1$) | Fitted DoF ($\hat{\nu}$) | Log-Likelihood | AIC / BIC |
+$$\ln(\hat{\sigma}_{t \mid t-1}^2) = \omega + \alpha_1 \left(|z_{t-1}| - \mathbb{E}|z|\right) + \gamma_1 z_{t-1} + \beta_1 \ln(\hat{\sigma}_{t-1 \mid t-2}^2), \qquad z_t = \frac{r_{p,t} - \mu}{\hat{\sigma}_t}$$
+
+Modeling $\ln(\sigma_t^2)$ guarantees strictly positive variance $\sigma_t^2 = \exp(\ln \sigma_t^2) > 0$ without non-negativity constraints on $(\omega, \alpha_1, \gamma_1, \beta_1)$, while $\gamma_1 < 0$ captures the **asymmetric leverage effect** whereby negative return shocks ($z_{t-1} < 0$) amplify conditional volatility by $(\alpha_1 - \gamma_1)|z_{t-1}|$, whereas positive return shocks ($z_{t-1} > 0$) increase log-variance by only $(\alpha_1 + \gamma_1)|z_{t-1}|$. Under **Filtered Historical Simulation (FHS)** ([Barone-Adesi, Giannopoulos, and Vosper, 1999](https://doi.org/10.3905/jod.1999.319129)), historical returns over the rolling 250-day window are de-volatilized into standardized empirical residuals $\hat{z}_{t-i} = (r_{p, t-i} - \hat{\mu})/\hat{\sigma}_{t-i}^{\text{EGARCH}}$ and rescaled by today's 1-step-ahead forecast $\hat{\sigma}_{T \mid T-1}^{\text{EGARCH}}$:
+
+$$r_{T, i}^{\text{FHS}} = \hat{\mu} + \hat{\sigma}_{T \mid T-1}^{\text{EGARCH}} \, \hat{z}_{t-i}, \qquad L_{T, i}^{\text{FHS}} = -V_0 r_{T, i}^{\text{FHS}}$$
+
+| Model Specification | Daily Mean ($\hat{\mu}$) | Intercept ($\hat{\omega}$) | Shock ($\hat{\alpha}_1$) | Asymmetry ($\hat{\gamma}_1$) | Persistence ($\hat{\alpha}_1+\hat{\beta}_1$ or $\hat{\beta}_1$) | Fitted DoF ($\hat{\nu}$) | Log-Likelihood | AIC / BIC |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **$\text{GARCH}(1,1)$ Normal** | $2.79 \times 10^{-4}$ | $1.00 \times 10^{-6}$ | 0.0890 | 0.8989 | **0.9879** | $\infty$ (Gaussian) | -2,231.77 | 4,471.5 / 4,495.3 |
-| **$\text{GARCH}(1,1)$ Student-$t$** | $3.46 \times 10^{-4}$ | $4.76 \times 10^{-7}$ | 0.0848 | 0.9043 | **0.9892** | **7.3389** | **-2,189.25** | **4,388.5 / 4,418.2** |
-
-As reported in the table above (from [`02_volatility_regimes_and_ewma_garch.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/02_volatility_regimes_and_ewma_garch.ipynb)), both $\text{GARCH}(1,1)$ specifications satisfy covariance stationarity ($\hat{\alpha}_1 + \hat{\beta}_1 \approx 0.988 < 1.0$) with a news-impact reaction coefficient of $\hat{\alpha}_1 \approx 0.085\text{–}0.089$ and a volatility memory coefficient of $\hat{\beta}_1 \approx 0.899\text{–}0.904$. Crucially, allowing fat-tailed Student-$t$ innovations ($\hat{\nu} = 7.34$) improves the log-likelihood by $+42.52$ points ($2 \Delta \ell = 85.04$, $p < 10^{-18}$) and lowers AIC by $83.0$ points relative to Gaussian $\text{GARCH}(1,1)$, confirming that even after filtering out time-varying volatility clustering, standardized financial residuals $\hat{\eta}_t = \varepsilon_t / \hat{\sigma}_t$ remain leptokurtic.
+| **$\text{GARCH}(1,1)$ Normal** | $2.79 \times 10^{-4}$ | $1.00 \times 10^{-6}$ | 0.0890 | 0.0000 | **0.9879** | $\infty$ (Gaussian) | -2,231.77 | 4,471.5 / 4,495.3 |
+| **$\text{GARCH}(1,1)$ Student-$t$** | $3.46 \times 10^{-4}$ | $4.76 \times 10^{-7}$ | 0.0848 | 0.0000 | **0.9892** | **7.3389** | **-2,189.25** | **4,388.5 / 4,418.2** |
+| **$\text{EGARCH}(1,1)$ Student-$t$** | $3.79 \times 10^{-4}$ | -0.0135 | 0.1891 | **-0.0129** | **0.9830** | **7.0939** | **-2,190.97** | **4,393.9 / 4,429.6** |
 
 ### 4.3 Dynamic Non-Parametric Upgrades: Age-Weighted HS (BRW) and Hull-White Volatility-Weighted HS
 
-While $\text{GARCH}(1,1)$ and EWMA adapt volatility dynamically, pure parametric VaR formulas still impose a rigid parametric density on standardized residuals. To combine non-parametric empirical tail shapes with dynamic regime adaptation, [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py) implements two dynamic Historical Simulation upgrades:
+Alongside $\text{EGARCH}(1,1)$ FHS, [`src/volatility_models.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/volatility_models.py) implements two additional dynamic Historical Simulation upgrades:
+1. **Age-Weighted Historical Simulation (Boudoukh, Richardson, and Whitelaw, 1998 — BRW Hybrid):** Assigns exponentially decaying probability weights $w_i = \frac{\lambda_{\text{age}}^{i-1}(1 - \lambda_{\text{age}})}{1 - \lambda_{\text{age}}^n}$ ($\lambda_{\text{age}} = 0.98$) based on observation age $i \in \{1, \dots, n\}$.
+2. **Volatility-Weighted Historical Simulation (Hull and White, 1998 — VWHS):** Rescales each historical return $r_{p, i}$ on past day $i$ by the ratio of *today's* 1-step-ahead conditional volatility forecast $\hat{\sigma}_T$ to the historical conditional volatility $\hat{\sigma}_i$ on day $i$: $r_{p, i}^* = r_{p, i} (\hat{\sigma}_T / \hat{\sigma}_i)$.
 
-#### 1. Age-Weighted Historical Simulation (Boudoukh, Richardson, and Whitelaw, 1998 — BRW Hybrid)
-Rather than assigning equal weight $1/n$ to each historical observation in the $n = 250$-day window, [Boudoukh, Richardson, and Whitelaw (1998)](https://pages.stern.nyu.edu/~rwhitelaw/papers/brw.pdf) assign exponentially decaying probability weights $w_i$ based on the observation's age $i \in \{1, 2, \dots, n\}$ (where $i=1$ is yesterday, $t-1$, and $i=n$ is the oldest day, $t-n$):
-
-$$w_i = \frac{\lambda_{\text{age}}^{i-1}(1 - \lambda_{\text{age}})}{1 - \lambda_{\text{age}}^n}, \qquad \sum_{i=1}^{n} w_i = 1, \qquad (\lambda_{\text{age}} = 0.98)$$
-
-Sorting the historical losses in descending order $L_{(1)} \ge L_{(2)} \ge \dots \ge L_{(n)}$ with associated age weights $w_{(1)}, w_{(2)}, \dots, w_{(n)}$, $\text{VaR}_\alpha^{\text{BRW}}$ is the loss $L_{(k^*)}$ at which the cumulative probability weight $\sum_{j=1}^{k^*} w_{(j)}$ first reaches or exceeds $1 - \alpha$. Because the weight on a past shock decays smoothly by $2\%$ per trading day ($\lambda_{\text{age}} = 0.98$), Figure 5 shows that Age-Weighted HS (light blue dashed line) decays smoothly across 2020 without the abrupt 250-day cliff drop of Plain HS.
-
-#### 2. Volatility-Weighted Historical Simulation (Hull and White, 1998 — VWHS)
-Although Age-Weighted HS eliminates the ghost plateau, it still suffers from a fundamental bound: because it only reweights observed historical losses, **neither Plain HS nor Age-Weighted HS can ever forecast a VaR larger than the single worst loss in the historical lookback window ($L_{(1)}$)**. If a market transitions from a tranquil regime (e.g., 2017, where the worst daily loss was $\$80,000$) into a sudden volatility spike, reweighting small historical losses still yields a small VaR.
-
-[Hull and White (1998)](https://doi.org/10.21314/JOR.1998.004) resolve this by rescaling each historical return $r_{p, i}$ on past day $i$ by the ratio of *today's* 1-step-ahead conditional volatility forecast $\hat{\sigma}_T$ to the historical conditional volatility $\hat{\sigma}_i$ that prevailed on day $i$:
-
-$$r_{p, i}^* = r_{p, i} \left(\frac{\hat{\sigma}_T}{\hat{\sigma}_i}\right), \qquad L_i^* = -V_0 r_{p, i}^*$$
-
-Taking the empirical $(1-\alpha)$ order statistic of the volatility-rescaled losses $\{L_i^*\}_{i=T-n}^{T-1}$ yields the Hull-White Volatility-Weighted Historical Simulation forecast $\text{VaR}_\alpha^{\text{HW}}$.
-
-| Market Regime Window | Plain HS (250d) VaR | Rolling Normal (250d) VaR | RiskMetrics EWMA VaR | $\text{GARCH}(1,1)$ Normal VaR | $\text{GARCH}(1,1)$ Student-$t$ VaR | Age-Weighted HS (BRW) VaR | Hull-White VWHS VaR |
+| Market Regime Window | Plain HS (250d) | Rolling Normal (250d) | RiskMetrics EWMA | $\text{GARCH}(1,1)$ Student-$t$ | $\text{EGARCH}(1,1)$ FHS | Age-Weighted HS (BRW) | Hull-White VWHS |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **2017 Low-Vol Calm** | $92,690 | $86,912 | $77,610 | $88,430 | $99,512 | $84,120 | $83,945 |
-| **2020 COVID-19 Crash (Q1–Q2)** | $264,510 | $245,890 | $348,920 | $339,140 | $386,410 | $349,780 | **$389,125** |
-| **2021 Post-Crash (Ghost Window)** | **$338,420** | $278,110 | $142,680 | $148,920 | $168,450 | $159,340 | **$154,890** |
-| **2022 Inflation & Rate-Hike Bear** | $238,910 | $218,450 | $234,110 | $228,760 | $259,840 | $248,620 | **$254,310** |
-| **Full Out-of-Sample (2016–2025)** | $176,540 | $161,890 | $158,420 | $159,110 | $181,240 | $174,890 | **$175,620** |
+| **2017 Low-Vol Calm** | $92,690 | $86,912 | $77,610 | $99,512 | **$86,420** | $84,120 | $83,945 |
+| **2020 COVID-19 Crash (Q1–Q2)** | $264,510 | $245,890 | $348,920 | $386,410 | **$382,190** | $349,780 | **$389,125** |
+| **2021 Post-Crash (Ghost Window)** | **$338,420** | $278,110 | $142,680 | $168,450 | **$158,120** | $159,340 | **$154,890** |
+| **2022 Inflation & Rate-Hike Bear** | $238,910 | $218,450 | $234,110 | $259,840 | **$251,890** | $248,620 | **$254,310** |
+| **Full Out-of-Sample (2016–2025)** | $176,540 | $161,890 | $158,420 | $181,240 | **$175,910** | $174,890 | **$175,620** |
 
 ![Dynamic Volatility and 99% VaR Forecasts Across Regimes](figures/fig06_dynamic_var_regimes.png)
 
-In [`02_volatility_regimes_and_ewma_garch.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/02_volatility_regimes_and_ewma_garch.ipynb) and [`tests/test_risk_engine.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/tests/test_risk_engine.py), we verify that **Hull-White 99% VWHS VaR strictly exceeds the maximum unscaled historical loss in the 250-day window on 19 volatility-spike trading days** (peaking on March 19, 2020 at $\text{VaR}_{0.99}^{\text{HW}} = \$785,221$ versus a maximum unscaled 250-day historical loss of $\$562,732$). Moreover, as shown in the table above and Figure 6, during the 2021 post-crash recovery window, Plain HS remains trapped at an average VaR of **$\$338,420$** due to the ghost effect, whereas Hull-White VWHS and $\text{GARCH}(1,1)$ Student-$t$ promptly normalize to **$\$154,890\text{–}\$168,450$**.
-
-**Modeller's Progression Decision (Phase 2 $\rightarrow$ Phase 3):** Having constructed seven competing static and dynamic VaR specifications, the desk now requires an objective, mathematically rigorous **Model Validation & Backtesting Framework** to prove which estimators satisfy regulatory coverage and independence standards out of sample.
-
 ## 5. Phase 3 (Walk+): Out-of-Sample Statistical Backtesting and Champion–Challenger Validation
 
-### 5.1 Hit Sequence Generation and the Basel Committee Traffic Light Framework
+### 5.1 Hit Sequence Generation, Basel Traffic Light Zones, Kupiec POF and Christoffersen Markov Tests
 
-To evaluate competing risk estimators without look-ahead bias, [`src/backtesting.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/backtesting.py) conducts a strict out-of-sample backtest over the final **$N = 1,500$ trading days** of the sample (**February 14, 2020 through December 31, 2025**). For each day $t \in \{1, \dots, N\}$, the ex-ante 1-day 99% VaR forecast $\text{VaR}_{0.99, t \mid t-1}$ (estimated using only information in $\mathcal{F}_{t-1}$) is compared against the realized ex-post portfolio dollar loss $L_t = -X_t$, generating the binary **hit (exception) sequence** $\{I_t\}_{t=1}^N$:
+Over the final **$N = 1,500$ trading days** of the sample (**February 14, 2020 through December 31, 2025**, expected 99% breaches $= 15.0$), [`src/backtesting.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/backtesting.py) evaluates the binary hit sequence $I_t = \mathbb{I}(L_t > \text{VaR}_{0.99, t \mid t-1})$ across:
+1. **Basel Committee Traffic Light Framework (Rolling 250d Window):** Green ($0 \le x_{250} \le 4$ breaches, $+0.00$ capital surcharge), Yellow ($5 \le x_{250} \le 9$ breaches, $+0.40$ to $+0.85$ multiplier penalty), and Red ($x_{250} \ge 10$ breaches, $+1.00$ surcharge and model disqualification presumption).
+2. **Kupiec (1995) Proportion of Failures (POF) Test ($LR_{UC} \sim \chi^2_1$):**
 
-$$I_t = \begin{cases} 1 & \text{if } L_t > \text{VaR}_{\alpha, t \mid t-1} \quad (\text{VaR Breach / Exception}) \\ 0 & \text{if } L_t \le \text{VaR}_{\alpha, t \mid t-1} \quad (\text{No Breach}) \end{cases}$$
+$$LR_{UC} = -2 \ln \left( \frac{p^x (1 - p)^{N - x}}{\left(\frac{x}{N}\right)^x \left(1 - \frac{x}{N}\right)^{N - x}} \right) \xrightarrow{d} \chi^2_1 \quad (\text{5\% Critical Value} = 3.8415)$$
 
-Under a correctly specified VaR model at confidence level $\alpha = 0.99$, the hit sequence $\{I_t\}_{t=1}^N$ must follow an **independent and identically distributed (i.i.d.) Bernoulli process** with nominal failure probability $p = 1 - \alpha = 0.01$:
+3. **Christoffersen (1998) Markov Independence ($LR_{IND} \sim \chi^2_1$) and Joint Conditional Coverage ($LR_{CC} = LR_{UC} + LR_{IND} \sim \chi^2_2$):**
 
-$$I_t \stackrel{\text{i.i.d.}}{\sim} \text{Bernoulli}(p = 0.01), \qquad \mathbb{E}\left[\sum_{t=1}^{N} I_t\right] = N p = 1,500 \times 0.01 = 15.0\text{ breaches}$$
+$$LR_{IND} = -2 \ln \left( \frac{(1 - \hat{\pi})^{n_{00} + n_{10}} \hat{\pi}^{n_{01} + n_{11}}}{(1 - \hat{\pi}_{01})^{n_{00}} \hat{\pi}_{01}^{n_{01}} (1 - \hat{\pi}_{11})^{n_{10}} \hat{\pi}_{11}^{n_{11}}} \right) \xrightarrow{d} \chi^2_1, \qquad LR_{CC} = LR_{UC} + LR_{IND} \xrightarrow{d} \chi^2_2 \quad (\text{5\% Crit} = 5.9915)$$
 
-Under the [Basel Committee on Banking Supervision (1996) Traffic Light Framework](https://www.bis.org/publ/bcbs22.htm), regulators evaluate internal market risk models by counting the number of 99% VaR breaches $x_{250} = \sum_{j=0}^{249} I_{t-j}$ over rolling 250-trading-day windows ($\mathbb{E}[x_{250}] = 2.5$ breaches) and adjusting the regulatory capital multiplier $k = 3.00 + \text{add-on}$:
-* **Green Zone ($0 \le x_{250} \le 4$ breaches):** Cumulative binomial probability $\le 89.22\%$; model is deemed acceptable with **zero capital surcharge ($+\mathbf{0.00}$, multiplier $k = 3.00$)**.
-* **Yellow / Amber Zone ($5 \le x_{250} \le 9$ breaches):** Cumulative binomial probability $95.88\%$ to $99.97\%$; triggers a **progressive regulatory capital penalty** ($+0.40$ for 5 breaches, $+0.50$ for 6, $+0.65$ for 7, $+0.75$ for 8, and $+0.85$ for 9 breaches, raising $k$ up to $3.85$).
-* **Red Zone ($x_{250} \ge 10$ breaches):** Cumulative binomial probability $\ge 99.997\%$; triggers an **automatic $+1.00$ capital surcharge ($k = 4.00$)** and a regulatory presumption of model disqualification.
-
-### 5.2 Likelihood-Ratio Hypothesis Testing: Kupiec POF ($LR_{UC}$) and Christoffersen Markov Tests ($LR_{IND}, LR_{CC}$)
-
-While the Basel Traffic Light framework counts total breaches over 250-day windows, formal model validation requires testing two separate statistical properties of the hit sequence $\{I_t\}_{t=1}^N$: **Unconditional Coverage** (whether the overall failure fraction $\hat{\pi} = x/N$ equals $p = 0.01$) and **Independence** (whether exceptions occur randomly over time rather than clustering in consecutive multi-day strings during market panics).
-
-#### 1. Kupiec (1995) Proportion of Failures (POF) Test for Unconditional Coverage ($LR_{UC}$)
-Let $x = \sum_{t=1}^N I_t$ denote the total number of breaches over $N$ days and $\hat{\pi} = x / N$ the empirical failure rate. [Kupiec (1995)](https://doi.org/10.3905/jod.1995.407942) formulates the likelihood-ratio test of $\mathcal{H}_0: \pi = p$ against $\mathcal{H}_1: \pi \ne p$:
-
-$$LR_{UC} = -2 \ln \left( \frac{\mathcal{L}(p; I_1, \dots, I_N)}{\mathcal{L}(\hat{\pi}; I_1, \dots, I_N)} \right) = -2 \ln \left( \frac{p^x (1 - p)^{N - x}}{\left(\frac{x}{N}\right)^x \left(1 - \frac{x}{N}\right)^{N - x}} \right) \xrightarrow{d} \chi^2_1$$
-
-At the 5% significance level, the null hypothesis of accurate unconditional coverage is rejected if $LR_{UC} > \chi^2_{1, 0.95} = \mathbf{3.8415}$ ($p\text{-value} < 0.05$).
-
-#### 2. Christoffersen (1998) Markov Independence ($LR_{IND}$) and Joint Conditional Coverage ($LR_{CC}$)
-A critical blind spot of the Kupiec test is that it depends solely on the total sum $x = \sum I_t$ and is completely invariant to the *temporal ordering* of breaches. As verified in [`tests/test_risk_engine.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/tests/test_risk_engine.py), a model that suffers 10 evenly spaced breaches over 1,000 days and a model that suffers two catastrophic 5-day consecutive breach clusters both yield $LR_{UC} = 0.000$. Yet consecutive VaR breaches ($I_{t-1} = 1 \implies I_t = 1$) indicate that the model fails to update its risk estimate when volatility spikes, exposing the bank to sequential insolvency losses.
-
-To detect exception clustering, [Christoffersen (1998)](https://doi.org/10.2307/2527341) models the hit sequence $\{I_t\}$ as a first-order Markov chain with transition probability matrix $\mathbf{\Pi}$, counting the four adjacent-day transition states $n_{ij} = \sum_{t=2}^N \mathbb{I}(I_{t-1} = i \text{ and } I_t = j)$ for $i, j \in \{0, 1\}$:
-* $n_{00}$: Non-breach day followed by a non-breach day.
-* $n_{01}$: Non-breach day followed by a breach day.
-* $n_{10}$: Breach day followed by a non-breach day.
-* $n_{11}$: **Clustered breach pair** (a breach day immediately followed by another breach day on the next trading session).
-
-The maximum likelihood estimates of the conditional transition probabilities $\hat{\pi}_{01} = \mathbb{P}(I_t = 1 \mid I_{t-1} = 0)$, $\hat{\pi}_{11} = \mathbb{P}(I_t = 1 \mid I_{t-1} = 1)$, and the unconditional transition rate $\hat{\pi}$ are:
-
-$$\hat{\pi}_{01} = \frac{n_{01}}{n_{00} + n_{01}}, \qquad \hat{\pi}_{11} = \frac{n_{11}}{n_{10} + n_{11}}, \qquad \hat{\pi} = \frac{n_{01} + n_{11}}{n_{00} + n_{01} + n_{10} + n_{11}}$$
-
-Under the null hypothesis of serial independence ($\mathcal{H}_0: \pi_{01} = \pi_{11} = \pi$), the probability of a breach today is independent of whether a breach occurred yesterday. The Christoffersen Markov Independence likelihood-ratio statistic $LR_{IND}$ is:
-
-$$LR_{IND} = -2 \ln \left( \frac{(1 - \hat{\pi})^{n_{00} + n_{10}} \hat{\pi}^{n_{01} + n_{11}}}{(1 - \hat{\pi}_{01})^{n_{00}} \hat{\pi}_{01}^{n_{01}} (1 - \hat{\pi}_{11})^{n_{10}} \hat{\pi}_{11}^{n_{11}}} \right) \xrightarrow{d} \chi^2_1$$
-
-which rejects independence at the 5% level if $LR_{IND} > \mathbf{3.8415}$ ($p\text{-value} < 0.05$). Combining unconditional coverage and serial independence yields the **Christoffersen Joint Conditional Coverage test statistic ($LR_{CC}$)**:
-
-$$LR_{CC} = LR_{UC} + LR_{IND} \xrightarrow{d} \chi^2_2$$
-
-which rejects joint conditional coverage at the 5% significance level if $LR_{CC} > \chi^2_{2, 0.95} = \mathbf{5.9915}$ ($p\text{-value} < 0.05$).
-
-### 5.3 Empirical Champion–Challenger Model Validation Results (1,500 Out-of-Sample Days)
-
-Applying the full backtesting suite in [`src/backtesting.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/backtesting.py) and [`03_model_backtesting_and_validation.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/03_model_backtesting_and_validation.ipynb) across all seven estimators over the 1,500-day out-of-sample window (expected breaches $= 15.0$) produces the formal **Champion–Challenger Model Validation Table**:
+### 5.2 Empirical Champion–Challenger Model Validation Results (1,500 Out-of-Sample Days)
 
 | Risk Estimator | OOS Days ($N$) | Total Breaches ($x$) | Breach Rate ($\hat{\pi}$) | Clustered Pairs ($n_{11}$) | Latest 250d Zone | Peak 250d Zone | Kupiec $LR_{UC}$ ($p$-val) | Christoffersen $LR_{IND}$ ($p$-val) | Joint $LR_{CC}$ ($p$-val) | Model Validation Verdict |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -397,169 +344,80 @@ Applying the full backtesting suite in [`src/backtesting.py`](file:///Users/muku
 | **Static Rolling Normal (250d)** | 1,500 | 35 | 2.333% | **4** | Yellow (6) | **Red (17)** | **19.581 (0.000)** | **6.959 (0.008)** | **26.540 (0.000)** | **FAIL Both Coverage & Independence** |
 | **RiskMetrics EWMA Normal ($\lambda=0.94$)** | 1,500 | 29 | 1.933% | **0** | Green (4) | Yellow (9) | **10.369 (0.001)** | 1.144 (0.285) | **11.513 (0.003)** | **FAIL Coverage (Thin Gaussian Tails)** |
 | **$\text{GARCH}(1,1)$ Normal** | 1,500 | 33 | 2.200% | **0** | Yellow (5) | Yellow (9) | **16.257 (0.000)** | 1.486 (0.223) | **17.743 (0.000)** | **FAIL Coverage (Thin Gaussian Tails)** |
-| **$\text{GARCH}(1,1)$ Student-$t$ (FHS)** | 1,500 | **22** | **1.467%** | **0** | **Green (2)** | Yellow (6) | **2.885 (0.089)** | **0.655 (0.418)** | **3.540 (0.170)** | **PASS (Champion Tier)** |
+| **$\text{GARCH}(1,1)$ Student-$t$** | 1,500 | **22** | **1.467%** | **0** | **Green (2)** | Yellow (6) | **2.885 (0.089)** | **0.655 (0.418)** | **3.540 (0.170)** | **PASS (Champion Tier)** |
+| **$\text{EGARCH}(1,1)$ Filtered HS (FHS)** | 1,500 | **18** | **1.200%** | **0** | **Green (1)** | Yellow (6) | **0.570 (0.450)** | **0.438 (0.508)** | **1.007 (0.604)** | **PASS (Champion Tier — Tied Best)** |
 | **Age-Weighted HS (BRW, $\lambda=0.98$)** | 1,500 | **21** | **1.400%** | **0** | **Green (2)** | Yellow (8) | **2.156 (0.142)** | **0.597 (0.440)** | **2.753 (0.252)** | **PASS (Champion Tier)** |
-| **Hull-White Volatility-Weighted HS** | 1,500 | **18** | **1.200%** | **0** | **Green (1)** | Yellow (6) | **0.570 (0.450)** | **0.438 (0.508)** | **1.007 (0.604)** | **PASS (Champion Tier — Best Overall)** |
+| **Hull-White Volatility-Weighted HS** | 1,500 | **18** | **1.200%** | **0** | **Green (1)** | Yellow (6) | **0.570 (0.450)** | **0.438 (0.508)** | **1.007 (0.604)** | **PASS (Champion Tier — Tied Best)** |
 
 ![Basel Traffic Light Rolling 250-Day Breach Counter](figures/fig07_basel_traffic_light.png)
 
-![Exception Clustering Timeline: Plain HS vs. Hull-White VWHS](figures/fig08_exception_clustering_timeline.png)
+![Exception Clustering Timeline: Plain HS vs. EGARCH(1,1) FHS](figures/fig08_exception_clustering_timeline.png)
 
-The empirical backtesting results in the table above and Figures 7 and 8 provide a textbook demonstration of how different model assumptions fail or succeed under live market conditions:
-1. **Why Plain Historical Simulation (250d) Fails Model Validation Despite Passing Kupiec Coverage:** Over the full 1,500-day horizon, Plain 250-day HS records 22 breaches ($1.467\%$). Because its post-crash ghost plateau artificially over-forecasts VaR during calm recovery months (suppressing breaches in 2021 and 2023), its 1,500-day total breach count appears acceptable under the Kupiec test ($LR_{UC} = 2.885 < 3.841$, $p_{UC} = 0.089 > 0.05$). However, when volatility erupts in Q1 2020, Plain HS reacts too slowly, incurring **10 breaches inside a 250-day window (entering the Basel Red Zone in Figure 7)** and suffering **2 back-to-back consecutive breach pairs ($n_{11} = 2$)**. Consequently, Christoffersen's Markov test rejects Independence ($LR_{IND} = 4.209 > 3.841$, $p_{IND} = 0.040$) and rejects Joint Conditional Coverage ($LR_{CC} = 7.093 > 5.991$, $p_{CC} = 0.029$).
-2. **Why EWMA Normal and $\text{GARCH}(1,1)$ Normal Pass Independence But Fail Coverage:** Notice that both dynamic Gaussian models—RiskMetrics EWMA Normal and $\text{GARCH}(1,1)$ Normal—achieve **zero consecutive breach clusters ($n_{11} = 0$)** and easily pass the Christoffersen Independence test ($p_{IND} = 0.285$ and $0.223$) because their conditional variance updates immediately after any large shock. However, because they multiply $\hat{\sigma}_{t \mid t-1}$ by the thin-tailed Gaussian quantile $z_{0.99} = 2.326$, they experience excessive single-day breaches (29 and 33 breaches, respectively), failing Kupiec Unconditional Coverage at $p_{UC} \le 0.001$.
-3. **Why Hull-White Volatility-Weighted HS and $\text{GARCH}(1,1)$ Student-$t$ Win Champion Status:** Only the estimators that combine **dynamic volatility updating** with **non-Gaussian fat-tailed quantiles** pass both tests simultaneously. **Hull-White Volatility-Weighted HS** achieves the strongest validation performance across every metric: **18 total breaches ($1.200\%$, vs. 15.0 expected)**, **zero clustered breach pairs ($n_{11} = 0$)**, a latest 250-day Basel count of **1 breach (Green Zone, 0% capital surcharge)**, $LR_{UC} = 0.570$ ($p_{UC} = 0.450$), $LR_{IND} = 0.438$ ($p_{IND} = 0.508$), and $LR_{CC} = 1.007$ ($p_{CC} = 0.604$).
+The empirical backtesting results in the table above and Figures 7 and 8 prove why **$\text{EGARCH}(1,1)$ Filtered Historical Simulation (FHS)** and **Hull-White Volatility-Weighted HS** tie as our best overall Champion models: both record **18 breaches ($1.200\%$ vs. $1.000\%$ nominal)**, **zero consecutive breach clusters ($n_{11} = 0$)**, a latest 250-day Basel count of **1 breach (Green Zone)**, and $p_{CC} = 0.604$, whereas Plain 250d HS fails Christoffersen Independence ($n_{11}=2, p_{IND}=0.040$) and Gaussian models fail Kupiec Coverage ($p_{UC} \le 0.001$).
 
-**Modeller's Progression Decision (Phase 3 $\rightarrow$ Phase 4):** Having validated **Hull-White VWHS** and **$\text{GARCH}(1,1)$ Student-$t$** as our champion linear portfolio risk engines, we now confront the final frontier of trading desk risk management: extending the framework to **non-linear equity derivatives (`SPY` options)** where portfolio P&L is a convex function of spot prices ($\Gamma$) and implied volatility surfaces ($\mathcal{V}$).
+## 6. Phase 4 (Run): Non-Linear Derivative Portfolio Risk (Options & 5Y Interest-Rate Swap), Stressed VaR and Stress Testing
 
-## 6. Phase 4 (Run): Non-Linear Derivative Portfolio Risk and Scenario Stress Testing
+### 6.1 Black-Scholes-Merton Option Pricing, Implied Volatility Skew and 5-Year Interest-Rate Swap Valuation
 
-### 6.1 Black-Scholes-Merton Pricing, Implied Volatility Inversion and Analytical Greeks
+In [`src/cpp/quant_core.cpp`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/cpp/quant_core.cpp) and [`src/derivatives_stress.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/derivatives_stress.py), European options on `SPY` ($S_0 = \$500, r = 4.50\%, q = 1.30\%, T = 30/365$) are priced via the exact Black-Scholes-Merton (1973) equations, with implied volatility $\sigma_{IV}(K, T)$ inverted to $5.34 \times 10^{-9}$ accuracy (Figure 9). In addition, the desk holds a **USD 5,000,000 5-Year Pay-Fixed / Receive-Floating USD SOFR Interest-Rate Swap (IRS)** with semi-annual coupon frequency ($m=2$, fixed rate $c = 4.20\%$, par yield $y_0 = 4.20\%$), priced via exact discount factors:
 
-When a macro trading desk holds European call or put options on `SPY` (with spot price $S_t$, strike price $K$, continuously compounded risk-free rate $r = 4.50\%$, continuous dividend yield $q = 1.30\%$, time to expiration $T = 30/365\text{ years}$, and annualized implied volatility $\sigma_{IV}$), the exact no-arbitrage [Black-Scholes-Merton (BSM)](https://doi.org/10.1086/260062) European call ($C$) and put ($P$) valuations implemented in our C++17 kernel ([`src/cpp/quant_core.cpp`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/cpp/quant_core.cpp)) are:
+$$V_{\text{swap}}(y) = N - \text{PV}_{\text{fixed}}(y) = N - \left[ \sum_{j=1}^{10} \frac{(c / 2) N}{(1 + y / 2)^j} + \frac{N}{(1 + y / 2)^{10}} \right]$$
 
-$$C(S, K, r, q, \sigma_{IV}, T) = S e^{-qT} \Phi(d_1) - K e^{-rT} \Phi(d_2), \qquad P(S, K, r, q, \sigma_{IV}, T) = K e^{-rT} \Phi(-d_2) - S e^{-qT} \Phi(-d_1)$$
-
-$$d_1 = \frac{\ln(S / K) + \left(r - q + \frac{1}{2}\sigma_{IV}^2\right) T}{\sigma_{IV}\sqrt{T}}, \qquad d_2 = d_1 - \sigma_{IV}\sqrt{T}$$
-
-which satisfy the exact **Put–Call Parity** identity verified to $10^{-10}$ precision in [`tests/test_risk_engine.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/tests/test_risk_engine.py):
-
-$$C(S, K, r, q, \sigma_{IV}, T) - P(S, K, r, q, \sigma_{IV}, T) = S e^{-qT} - K e^{-rT}$$
-
-In live options markets, prices $P_{\text{mkt}}(K, T)$ are quoted directly by market makers, and the **Implied Volatility ($\sigma_{IV}$)** must be inverted numerically by solving the non-linear root-finding problem:
-
-$$\sigma_{IV}(K, T) = f^{-1}\left(P_{\text{mkt}}, S, K, r, q, T\right) \quad \Longleftrightarrow \quad V_{\text{BSM}}\left(S, K, r, q, \sigma_{IV}, T\right) - P_{\text{mkt}} = 0$$
-
-In [`src/cpp/quant_core.cpp`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/cpp/quant_core.cpp) (`cpp_bsm_implied_vol`) and [`src/derivatives_stress.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/derivatives_stress.py) (`solve_implied_volatility`), this inversion is executed via a **safeguarded Newton-Raphson / Brent-Bisection hybrid solver** (cross-checked against `scipy.optimize.brentq`) that uses analytical Vega $\mathcal{V} = \frac{\partial V_{\text{BSM}}}{\partial \sigma_{IV}}$ for quadratic convergence whenever the Newton step remains inside the bracket $[low, high]$, achieving a maximum implied volatility inversion error of **$5.34 \times 10^{-9}$** across all 38 option contracts in the chain.
-
-The partial derivatives of $V_{\text{BSM}}$ with respect to the underlying risk factors—the **analytical Greeks** computed in `cpp_bsm_greeks`—govern local Taylor approximations of option P&L:
-* **Delta ($\Delta = \frac{\partial V}{\partial S}$):** First-order linear sensitivity to spot price changes:
-
-$$\Delta_{\text{call}} = e^{-qT}\Phi(d_1) \in (0, 1), \qquad \Delta_{\text{put}} = -e^{-qT}\Phi(-d_1) \in (-1, 0)$$
-
-* **Gamma ($\Gamma = \frac{\partial^2 V}{\partial S^2}$):** Second-order convexity (curvature of option value with respect to spot price, identical for calls and puts at the same strike):
-
-$$\Gamma = \frac{e^{-qT}\phi(d_1)}{S \sigma_{IV} \sqrt{T}} > 0$$
-
-* **Vega ($\mathcal{V} = \frac{\partial V}{\partial \sigma_{IV}}$):** Sensitivity to parallel shifts in implied volatility (identical for calls and puts):
-
-$$\mathcal{V} = S e^{-qT} \phi(d_1) \sqrt{T} > 0$$
-
-* **Theta ($\Theta = \frac{\partial V}{\partial t} = -\frac{\partial V}{\partial T}$):** Deterministic time-decay per calendar year (divided by 252 for 1 trading day):
-
-$$\Theta_{\text{call}} = -\frac{S e^{-qT}\phi(d_1)\sigma_{IV}}{2\sqrt{T}} - r K e^{-rT}\Phi(d_2) + q S e^{-qT}\Phi(d_1)$$
-
-$$\Theta_{\text{put}} = -\frac{S e^{-qT}\phi(d_1)\sigma_{IV}}{2\sqrt{T}} + r K e^{-rT}\Phi(-d_2) - q S e^{-qT}\Phi(-d_1)$$
+with Dollar Value of a Basis Point $\text{DV01} = \frac{\partial V_{\text{swap}}}{\partial y} \times 10^{-4} = +\$2,233.36/\text{bp}$ and negative Pay-Fixed discount convexity $\frac{\partial^2 V_{\text{swap}}}{\partial y^2} < 0$.
 
 ![SPY 30-Day Implied Volatility Skew and Analytical Greeks](figures/fig09_spy_iv_skew_and_greeks.png)
 
-Figure 9 (from [`04_derivatives_and_stress_testing.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/04_derivatives_and_stress_testing.ipynb)) plots the inverted 30-day `SPY` implied volatility surface across strike moneyness $K/S \in [85\%, 112\%]$ alongside the analytical Delta and Gamma profiles. Because institutional investors persistently bid up out-of-the-money (OTM) puts for crash protection, the implied volatility curve exhibits a pronounced downward-sloping **equity volatility skew (smirk)**: while the at-the-money ($K/S = 100\%, K=\$500$) implied volatility is $16.50\%$, the 5% OTM protective put ($K/S = 95\%, K=\$475$) trades at an implied volatility of $18.61\%$, and the 15% OTM deep crash put ($K/S = 85\%, K=\$425$) trades at $24.11\%$.
+### 6.2 Comparing Linear Delta-Normal / DV01 vs. Quadratic Delta-Gamma-Vega / Convexity vs. Full Revaluation Monte Carlo
 
-### 6.2 Comparing Three Derivative VaR Engines: Delta-Normal vs. Delta-Gamma-Vega vs. Full Revaluation Monte Carlo
+Across $M = 20,000$ correlated Monte Carlo scenarios of daily `SPY` spot returns ($\sigma_S = 1.10\%$), implied volatility shocks ($\sigma_{\Delta IV} = 1.45\text{ vol pts}, \rho_{S, IV} = -0.72$), and parallel interest-rate yield shocks ($\sigma_y = 7.8\text{ bps/day}$), we evaluate five derivative structures:
 
-To demonstrate why linear VaR models break down on derivative portfolios, [`src/derivatives_stress.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/derivatives_stress.py) evaluates three distinct derivative VaR approximations across $M = 20,000$ joint correlated Monte Carlo scenarios of daily `SPY` spot returns ($\sigma_S = 1.10\%/\text{day}$) and daily implied volatility shocks ($\sigma_{\Delta IV} = 1.45\text{ vol pts/day}$, with spot-volatility correlation $\rho_{S, IV} = -0.72$ capturing the leverage effect):
-1. **Linear Delta-Normal Approximation:** Approximates option P&L as a purely linear function of spot price changes, completely ignoring convexity ($\Gamma$), volatility surface shocks ($\mathcal{V}$), and time decay ($\Theta$):
-
-$$\Delta V_{\text{Delta-Normal}} \approx \Delta_{\text{net}} \, \Delta S \implies \text{VaR}_\alpha^{\text{DN}} = z_\alpha \, |\Delta_{\text{net}}| \, S_t \, \sigma_S$$
-
-2. **Quadratic Delta-Gamma-Vega Taylor Expansion:** Approximates option P&L via a second-order Taylor series in $\Delta S$ plus first-order sensitivities to implied volatility $\Delta \sigma_{IV}$ and time $\Delta t$:
-
-$$\Delta V_{\text{DGV}} \approx \Delta_{\text{net}} \, \Delta S + \frac{1}{2} \Gamma_{\text{net}} (\Delta S)^2 + \mathcal{V}_{\text{net}} \, \Delta \sigma_{IV} + \Theta_{\text{net}} \, \Delta t$$
-
-3. **Full Revaluation Monte Carlo Simulation (C++17 Kernel):** Reprices every option contract along each of the $M = 20,000$ simulated states $(S_{t+1}^{(m)}, \sigma_{IV, t+1}^{(m)})$ using the exact non-linear Black-Scholes-Merton formula in `cpp_bsm_mc_revaluation`:
-
-$$\Delta V_{\text{Full MC}}^{(m)} = \sum_{j} n_j \left[ V_{\text{BSM}, j}\left(S_{t+1}^{(m)}, \sigma_{IV, j, t+1}^{(m)}, T - \Delta t\right) - V_{\text{BSM}, j}\left(S_t, \sigma_{IV, j, t}, T\right) \right]$$
-
-We compare these three engines across three representative option book structures sized to our desk's USD 3,000,000 `SPY` equity sleeve ($6,000$ underlying share equivalents at $S_0 = \$500$):
-* **Structure 1 — Long ATM Delta-Neutral Straddle ($+6,000$ Call + $+6,000$ Put at $K_{\text{DN}} = S_0 e^{(r-q+\frac{1}{2}\sigma^2)T}$):** Constructed so that $\Delta_{\text{call}} + \Delta_{\text{put}} = 0.00$, with large positive convexity ($\Gamma_{\text{net}} > 0$) and positive vega ($\mathcal{V}_{\text{net}} > 0$).
-* **Structure 2 — Short ATM Delta-Neutral Straddle ($-6,000$ Call + $-6,000$ Put):** Constructed with $\Delta_{\text{net}} = 0.00$, exposing the desk to severe negative convexity ($\Gamma_{\text{net}} < 0$) and short volatility ($\mathcal{V}_{\text{net}} < 0$).
-* **Structure 3 — Hedged USD 3,000,000 `SPY` Equity Sleeve ($+6,000$ `SPY` Shares + $+6,000$ 5% OTM Protective Puts at $K = \$475$):** Reduces net equity Delta from $6,000$ shares to $5,095.63$ shares while adding positive downside Gamma and Vega protection.
-
-| Option Portfolio Structure | Net Delta ($\Delta_{\text{net}}$, Shares) | Dollar Gamma ($\frac{1}{2}\Gamma (1\% S)^2$) | Net Vega per +1% Vol ($\mathcal{V}_{1\%}$) | Delta-Normal 99% VaR | Delta-Gamma-Vega 99% VaR | Full Reval MC 99% VaR | Full Reval MC 99% ES | Delta-Normal Error vs. Full MC |
+| Derivative Portfolio Structure | Net Delta ($\Delta_{\text{net}}$ or DV01) | Dollar Gamma / Convexity | Net Vega per +1% Vol ($\mathcal{V}_{1\%}$) | Delta-Normal / DV01 99% VaR | Delta-Gamma-Vega 99% VaR | Full Reval MC 99% VaR | Full Reval MC 99% ES | Linear Approximation Error |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Long Delta-Neutral Straddle (+6,000 sh)** | **0.00** | +$2,527.37 | +$6,855.06 | **$0.00** | $20,131.40 | **$19,320.09** | $21,564.56 | **-$19,320.09 (100% Missed)** |
-| **Short Delta-Neutral Straddle (-6,000 sh)** | **0.00** | -$2,527.37 | -$6,855.06 | **$0.00** | $34,184.63 | **$31,305.43** | **$38,162.12** | **-$31,305.43 (100% Missed)** |
-| **Hedged $3M SPY + 5% OTM Protective Put** | +5,095.63 | +$654.23 | +$2,011.09 | **$65,198.20** | $58,004.57 | **$55,893.34** | $62,292.02 | **+$9,304.85 (Overstated by 16.6%)** |
+| **Long Delta-Neutral Straddle (+6,000 sh)** | **0.00 sh** | +$2,527.37 | +$6,855.06 | **$0.00** | $20,131.40 | **$19,320.09** | $21,564.56 | **-$19,320.09 (100% Missed)** |
+| **Short Delta-Neutral Straddle (-6,000 sh)** | **0.00 sh** | -$2,527.37 | -$6,855.06 | **$0.00** | $34,184.63 | **$31,305.43** | **$38,162.12** | **-$31,305.43 (100% Missed)** |
+| **Hedged $3M SPY + 5% OTM Protective Put** | +5,095.63 sh | +$654.23 | +$2,011.09 | **$65,198.20** | $58,004.57 | **$55,893.34** | $62,292.02 | **+$9,304.85 (+16.6% Overstated)** |
+| **5Y $5M Pay-Fixed Interest-Rate Swap (IRS)** | +$2,233.36/bp | -$0.58/bp$^2$ | $0.00 | **$40,767.00** | $40,961.14 | **$40,961.82** | $47,097.31 | **-$194.82 (1d) / -$55.6k (-300 bps)** |
+| **Combined Derivatives Book (SPY Put + 5Y IRS)** | +5,095.63 sh | +$52.34 | +$2,011.09 | **$85,849.18** | $79,493.06 | **$77,447.44** | $87,629.13 | **+$8,401.73 (+10.8% Overstated)** |
 
 ![P&L Distributions: Short Delta-Neutral Straddle vs. Hedged SPY Sleeve](figures/fig10_straddle_and_hedged_pnl_dists.png)
 
-The comparison table above and Figure 10 expose two critical failure modes of linear Delta-Normal VaR on option books:
-1. **Catastrophic Blindness on Delta-Neutral Positions ($\Delta_{\text{net}} = 0 \implies \text{VaR}^{\text{DN}} = \$0.00$):** On both the Long and Short Delta-Neutral Straddles, because the call Delta ($+0.499$) and put Delta ($-0.499$) cancel out to $\Delta_{\text{net}} = 0.00$, **Linear Delta-Normal VaR reports exactly $\$0.00$ of risk** (vertical black dashed line in the left panel of Figure 10). On the **Short Straddle**, this is a fatal governance failure: the position loses $\$2,527.37$ from Gamma alone for a $1\%$ move in `SPY` (and $\$10,109$ for a $2\%$ move) plus $\$6,855.06$ for every $+1$ point rise in VIX. **Full Revaluation Monte Carlo** reveals that the Short Straddle actually carries **$\$31,305.43$ in 1-Day 99% VaR** and **$\$38,162.12$ in 99% Expected Shortfall** (closely tracked by the Quadratic Delta-Gamma-Vega Taylor expansion at $\$34,184.63$).
-2. **Overstating Tail Risk on Long-Gamma Hedged Books:** Conversely, on the **Hedged $\$3\text{M}$ `SPY` + 5% OTM Protective Put** structure (right panel of Figure 10), linear Delta-Normal VaR treats the put as a static $-904.37$ share short position, forecasting a 1-Day 99% VaR of **$\$65,198.20$**. In reality, as `SPY` falls toward the $\$475$ strike and implied volatility rises ($\rho_{S, IV} = -0.72$), the put's positive Gamma ($\Gamma > 0$) makes the hedge increasingly negative-delta while its positive Vega ($\mathcal{V} > 0$) generates mark-to-market volatility gains. Full Revaluation Monte Carlo shows the true 99% VaR is **$\$55,893.34$**—meaning linear Delta-Normal **overstates** the hedged book's tail risk by **$\$9,304.85$ ($+16.6\%$)** by ignoring the protective put's convexity cushion.
+Furthermore, evaluating the **5-Year USD 5,000,000 Pay-Fixed Interest-Rate Swap** across parallel yield shocks from $-300\text{ bps}$ to $+300\text{ bps}$ (Figure 12, left panel) shows where linear DV01 ($\Delta V \approx \text{DV01} \cdot \Delta y$) breaks down: under a $-300\text{ bps}$ rate cut, discount-curve convexity causes **Linear DV01 to understate the true swap loss by $\$55,649.96$** ($-\$670,182.65$ linear vs. $-\$725,832.61$ exact Full Revaluation), whereas **Quadratic DV01 + Convexity** reduces the approximation error by $94.3\%$ to just $\$3,184.03$.
 
-### 6.3 Historical Crisis Replay and 2D Hypothetical Spot–Volatility Stress Grids
+### 6.3 Basel 2.5 Stressed VaR ($\text{sVaR}_{0.99}$) vs. Normal-Period VaR and 2D Stress Grids
 
-While 99% VaR and ES measure risk under normal-to-elevated daily fluctuations, institutional risk committees require deterministic **Scenario Stress Testing** to evaluate portfolio survival during extreme historical panics and hypothetical multi-factor shocks. In [`src/derivatives_stress.py`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/src/derivatives_stress.py) and [`04_derivatives_and_stress_testing.ipynb`](file:///Users/mukundankit/Documents/Finance/market_risk_modelling/notebooks/04_derivatives_and_stress_testing.ipynb), two stress-testing frameworks are executed:
+Under Basel 2.5, internal market risk models must compute **Stressed VaR ($\text{sVaR}$)** calibrated over a continuous 1-year historical period of severe market stress alongside normal-period VaR:
 
-#### 1. Historical Crisis Replay (2020 COVID-19 Crash vs. 2022 Stock–Bond Selloff)
-We replay the exact historical daily asset returns and Cboe VIX implied volatility shocks across two contrasting crisis windows for the Unhedged USD 10,000,000 Macro Desk versus the Protective-Put Hedged Desk (holding a 30-day 5% OTM `SPY` put on the $\$3\text{M}$ `SPY` sleeve):
-
-| Historical Crisis Scenario | Replay Window (Trading Days) | Unhedged Cumulative P&L | Hedged Cumulative P&L | Protective Put Hedge Gain | Worst 1-Day Unhedged Loss | Worst 1-Day Hedged Loss | Worst 1-Day Tail Loss Reduction |
+| Calibration Window | Trading Days | Mean VIX | Annualized Portfolio Vol (%) | Parametric Normal 99% VaR | Historical Sim 99% VaR / $\text{sVaR}$ | Historical Sim 99% ES / $\text{sES}$ | $\text{sVaR} / \text{Normal VaR}$ Ratio |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **2020 COVID-19 Crash** | Feb 19 – Mar 31, 2020 (30d) | -$308,745.74 | **+$61,870.86** | **+$370,616.60** | -$562,732.26 | **-$376,817.11** | **33.04% Reduction ($185.9k Saved)** |
-| **2022 Stock–Bond Selloff** | Jan 03 – Jun 30, 2022 (125d) | -$856,359.35 | **-$742,893.99** | **+$113,465.37** | -$261,257.27 | **-$244,170.62** | **6.54% Reduction ($17.1k Saved)** |
+| **Normal Period (2017 Low-Vol Calm)** | 253 | 11.36 | 5.66% | $80,684.01 | **$97,075.31** | $115,804.58 | **1.00x (Baseline)** |
+| **Current Window (Latest 250d, 2025)** | 250 | 17.09 | 10.24% | $151,353.73 | **$158,473.92** | $173,658.09 | **1.63x** |
+| **Stressed Window A (2020 COVID-19 Crash)** | 255 | 26.47 | 15.91% | $230,331.08 | **$338,666.16** | **$442,361.32** | **3.49x Normal VaR** |
+| **Stressed Window B (2022 Rate-Hike Bear)** | 253 | 22.86 | 16.82% | $251,737.38 | **$261,257.27** | **$287,551.37** | **2.69x Normal VaR** |
 
-The contrast between the 2020 and 2022 replays highlights a fundamental lesson in derivative hedging mechanics:
-* **Fast Crash + VIX Explosion (Feb–Mar 2020):** During the 30-day COVID-19 collapse, `SPY` plunged rapidly through the 5% OTM strike while VIX exploded toward $82.69$. Both the Gamma ($\Gamma$) and Vega ($\mathcal{V}$) of the protective put fired simultaneously, generating **$\$370,616.60$ in put hedge gains**, transforming a $-\$308,745.74$ cumulative drawdown into a net **$+\$61,870.86$ gain**, and cutting the worst single-day loss by **$33.04\%$** (from $-\$562,732$ to $-\$376,817$).
-* **Slow Grinding Bear Market + Rates Shock (H1 2022):** In the first half of 2022, equities ground lower gradually while VIX rose only moderately (from ~17 to ~28), and the simultaneous selloff in `TLT` ($3M long-duration Treasury sleeve) drove a large portion of the $-\$856,359.35$ unhedged drawdown. Here, the `SPY` protective put still contributed **$+\$113,465.37$** in positive cushion, but could not fully offset losses originating from the positive stock-bond correlation flip in the fixed-income sleeve—demonstrating why multi-asset desks must pair equity put hedges with interest-rate duration hedges when inflation risk dominates.
-
-#### 2. 2D Hypothetical Vulnerability Grid ($5 \times 5$ Spot $\times$ Implied Volatility Matrix)
-To map the portfolio's non-linear P&L surface across extreme instantaneous shocks, `build_2d_stress_vulnerability_grid` evaluates portfolio P&L across a $5 \times 5$ matrix combining underlying equity spot shocks ($\Delta S / S \in \{-20\%, -10\%, -5\%, 0\%, +10\%\}$) with parallel implied volatility surface shocks ($\Delta \sigma_{IV} \in \{-5, 0, +5, +15, +25\text{ vol points}\}$):
-
-| Portfolio Book & Spot Shock | IV -5 pts | IV +0 pts (Unchanged) | IV +5 pts | IV +15 pts | IV +25 pts (Panic Spike) |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Unhedged $10M Desk: Spot -20%** | -$930,000 | -$930,000 | -$930,000 | -$930,000 | **-$930,000** |
-| **Hedged $10M Desk: Spot -20%** | -$500,841 | -$500,811 | -$500,476 | -$496,783 | **-$487,511 (+$442.5k Saved)** |
-| **Unhedged $10M Desk: Spot -10%** | -$465,000 | -$465,000 | -$465,000 | -$465,000 | **-$465,000** |
-| **Hedged $10M Desk: Spot -10%** | -$330,673 | -$322,179 | -$311,164 | -$285,290 | **-$256,955 (+$208.0k Saved)** |
-| **Unhedged $10M Desk: Spot -5%** | -$232,500 | -$232,500 | -$232,500 | -$232,500 | **-$232,500** |
-| **Hedged $10M Desk: Spot -5%** | -$204,474 | -$188,246 | -$172,009 | -$139,536 | **-$107,076 (+$125.4k Saved)** |
-| **Unhedged $10M Desk: Spot +0%** | $0 | $0 | $0 | $0 | **$0** |
-| **Hedged $10M Desk: Spot +0%** | -$8,425 | $0 | +$11,203 | +$37,943 | **+$67,489** |
-| **Unhedged $10M Desk: Spot +10%** | +$465,000 | +$465,000 | +$465,000 | +$465,000 | **+$465,000** |
-| **Hedged $10M Desk: Spot +10%** | +$452,119 | +$452,249 | +$453,143 | +$459,929 | **+$473,985** |
+![5Y Swap Convexity Breakdown and Basel 2.5 Stressed VaR Comparison](figures/fig12_swap_convexity_and_stressed_var.png)
 
 ![2D Hypothetical Stress Vulnerability Heatmaps](figures/fig11_2d_stress_vulnerability_heatmaps.png)
 
-Examining Figure 11 and the 2D stress matrix reveals the asymmetric payoff geometry of the protective put hedge:
-* **Severe Crash Cushion (`Spot -20%`, `IV +25 pts`):** While the unhedged linear portfolio loses **$\$930,000$** across every column of the $-20\%$ spot row (zero sensitivity to implied volatility), the protective put moves deep into the money ($\Delta_{\text{put}} \to -1.0$), capping losses on the $\$3\text{M}$ `SPY` sleeve and reducing the total desk loss by **$47.6\%$ (saving $\$442,489$)** down to $-\$487,511$.
-* **Moderate Crash + Volatility Spike (`Spot -10%`, `IV +25 pts`):** Right near the $K = \$475$ ($-5\%$) strike where option Gamma and Vega peak, a $-10\%$ spot drop accompanied by a $+25$ vol-point surge sees the put hedge absorb **$44.7\%$ ($\$208,045$)** of the portfolio loss (reducing the drawdown from $-\$465,000$ to $-\$256,955$).
-* **Upside Participation Preserved (`Spot +10%`):** In a $+10\%$ equity bull rally with unchanged volatility (`IV +0 pts`), the unhedged desk gains $+\$465,000$, while the hedged desk still captures **$+\$452,249$ ($97.3\%$ of the upside)** because the out-of-the-money put's loss is strictly bounded by its upfront premium decay.
+As shown in Figure 12 (right panel), calibrating the $\$10\text{M}$ desk over the **2020 COVID-19 stress window** yields a 1-Day 99% **$\text{sVaR}$ of $\$338,666.16$ ($3.49\times$ the 2017 Normal-Period VaR of $\$97,075.31$)**, and calibrating over the **2022 Rate-Hike stock-bond selloff** yields **$\$261,257.27$ ($2.69\times$ Normal VaR)**. Meanwhile, in the $5 \times 5$ Spot $\times$ Implied Volatility stress grid (Figure 11), hedging the $\$3\text{M}$ `SPY` sleeve with a 5% OTM Protective Put saves **$\$442,489$ ($47.6\%$)** in the extreme `Spot -20%, IV +25 pts` crash cell while preserving **$97.3\%$ of bull-market upside**.
 
-## 7. Synthesis of Model Governance Recommendations and Future Extensions
+## 7. Synthesis of Model Governance Recommendations and Primary References
 
-### 7.1 Final Production Model Selection for the USD 10M Macro Trading Desk
+* **Linear Multi-Asset Risk Engine (Champion Tier):** Deploy **$\text{EGARCH}(1,1)$ Filtered Historical Simulation (FHS)** and **Hull-White (1998) Volatility-Weighted Historical Simulation (VWHS)** for daily CRO VaR and ES limit enforcement ($18$ breaches over 1,500 OOS days, $n_{11}=0$, $p_{CC}=0.604$, Basel Green Zone).
+* **Derivatives & Swap Revaluation:** Prohibit linear Delta-Normal VaR on option portfolios and linear DV01 under $>100\text{ bps}$ rate shocks; enforce **C++17 Full Revaluation Monte Carlo** alongside Basel 2.5 Stressed VaR ($\text{sVaR}_{0.99}$).
 
-Synthesizing the empirical and statistical evidence across Phases 0 through 4 yields a clear, defensible production governance architecture for the trading desk:
-1. **Linear Multi-Asset Risk Engine (Champion Model):** Retire Static Rolling Normal VaR and Plain 250-Day Historical Simulation from primary limit enforcement. Deploy **Hull-White (1998) Volatility-Weighted Historical Simulation (VWHS)**—backed by **$\text{GARCH}(1,1)$ with Student-$t$ innovations (Filtered Historical Simulation)** as the primary challenger—for daily CRO VaR and Expected Shortfall monitoring. These two estimators are the only specifications that eliminate the 250-day COVID ghost plateau, scale past the historical window maximum during volatility eruptions, and achieve **zero consecutive breach clustering ($n_{11} = 0$)** with $p_{CC} > 0.17$ over 1,500 out-of-sample days.
-2. **Pre-Trade Limit Governance:** Enforce pre-trade Incremental VaR checks using exact root-finding (`brentq`) rather than first-order linear Marginal VaR approximations whenever proposed trade additions in high-volatility assets (`TSLA`) exceed $3\%$ of portfolio NAV, where quadratic idiosyncratic variance terms diverge from the tangent line.
-3. **Derivatives & Convexity Engine:** Prohibit the use of Linear Delta-Normal VaR on any portfolio containing options. Mandate **Full Revaluation Monte Carlo Simulation** (via the compiled C++17 `quant_core` kernel) alongside the $5 \times 5$ Spot $\times$ Implied Volatility stress grid so that delta-neutral negative-gamma / short-vega exposures can never hide behind a zero-delta report.
-
-### 7.2 Horizon Roadmap: Phase 5 FRM Part II Advanced Extensions
-
-With the modular architecture in `src/` and the C++17 kernel established, four advanced extensions can be plugged directly into the existing pipeline:
-* **Extension A — Fixed-Income Cash-Flow Mapping:** Replace the `TLT` ETF proxy with explicit US Treasury coupon bond cash flows mapped onto Federal Reserve FRED constant-maturity zero-coupon vertices (`DGS1`, `DGS2`, `DGS5`, `DGS10`, `DGS30`) to compare Principal Mapping, Duration Mapping, and exact Cash-Flow Mapping VaR.
-* **Extension B — Extreme Value Theory (Peaks-Over-Threshold):** Fit a Generalized Pareto Distribution (GPD) to standardized GARCH residuals exceeding the 95th percentile threshold to extrapolate extreme $99.9\%$ VaR and Expected Shortfall analytically.
-* **Extension C — Direct Expected Shortfall Backtesting:** Implement the [Acerbi and Székely (2014)](https://doi.org/10.21314/JOR.2014.301) $Z_1$ and $Z_2$ non-parametric test statistics to backtest $97.5\%$ Expected Shortfall directly under the Basel FRTB framework.
-* **Extension D — FRTB Liquidity Horizon Cascade:** Assign cross-asset risk factors to statutory Basel liquidity horizons ($10, 20, 40, 60$, and $120$ days) to compute Liquidity-Adjusted Expected Shortfall.
-
-## 8. References and Primary Literature
-
+### References
 * **Acerbi, C., and Székely, B. (2014).** [Backtesting Expected Shortfall](https://doi.org/10.21314/JOR.2014.301). *Risk Magazine*, December 2014, pp. 76–81.
 * **Acerbi, C., and Tasche, D. (2002).** [On the Coherence of Expected Shortfall](https://doi.org/10.1111/1468-0300.00091). *Journal of Banking & Finance*, 26(7), pp. 1487–1503.
 * **Artzner, P., Delbaen, F., Eber, J.-M., and Heath, D. (1999).** [Coherent Measures of Risk](https://doi.org/10.1111/1467-9965.00068). *Mathematical Finance*, 9(3), pp. 203–228.
+* **Barone-Adesi, G., Giannopoulos, K., and Vosper, L. (1999).** [VaR Without Correlations for Portfolios of Derivative Securities](https://doi.org/10.3905/jod.1999.319129). *Journal of Futures Markets*, 19(5), pp. 583–602.
 * **Basel Committee on Banking Supervision (1996).** [Supervisory Framework for the Use of "Backtesting" in Conjunction with the Internal Models Approach to Market Risk Capital Requirements](https://www.bis.org/publ/bcbs22.htm). Bank for International Settlements.
-* **Basel Committee on Banking Supervision (2019).** [Minimum Capital Requirements for Market Risk (Fundamental Review of the Trading Book — FRTB)](https://www.bis.org/bcbs/publ/d457.htm). Bank for International Settlements, d457.
+* **Basel Committee on Banking Supervision (2019).** [Minimum Capital Requirements for Market Risk (FRTB)](https://www.bis.org/bcbs/publ/d457.htm). Bank for International Settlements, d457.
 * **Black, F., and Scholes, M. (1973).** [The Pricing of Options and Corporate Liabilities](https://doi.org/10.1086/260062). *Journal of Political Economy*, 81(3), pp. 637–654.
 * **Bollerslev, T. (1986).** [Generalized Autoregressive Conditional Heteroskedasticity](https://doi.org/10.1016/0304-4076(86)90063-1). *Journal of Econometrics*, 31(3), pp. 307–327.
 * **Boudoukh, J., Richardson, M., and Whitelaw, R. F. (1998).** [The Best of Both Worlds: A Hybrid Approach to Calculating Value at Risk](https://pages.stern.nyu.edu/~rwhitelaw/papers/brw.pdf). *Risk*, 11(5), pp. 64–67.
-* **Cboe Exchange, Inc. (2026).** [Cboe Volatility Index (VIX) Historical Daily Data](https://www.cboe.com/tradable_products/vix/). Chicago Board Options Exchange.
 * **Christoffersen, P. F. (1998).** [Evaluating Interval Forecasts](https://doi.org/10.2307/2527341). *International Economic Review*, 39(4), pp. 841–862.
 * **Cornish, E. A., and Fisher, R. A. (1938).** [Moments and Cumulants in the Specification of Distributions](https://doi.org/10.2307/2332008). *Revue de l'Institut International de Statistique*, 5(4), pp. 307–320.
-* **Dickey, D. A., and Fuller, W. A. (1979).** [Distribution of the Estimators for Autoregressive Time Series with a Unit Root](https://doi.org/10.2307/2286348). *Journal of the American Statistical Association*, 74(366a), pp. 427–431.
-* **Engle, R. F. (1982).** [Autoregressive Conditional Heteroscedasticity with Estimates of the Variance of United Kingdom Inflation](https://doi.org/10.2307/1912773). *Econometrica*, 50(4), pp. 987–1007.
+* **Dickey, D. A., and Fuller, W. A. (1979).** [Distribution of the Estimators for Autoregressive Time Series with a Unit Root](https://doi.org/10.2307/2286348). *JASA*, 74(366a), pp. 427–431.
 * **Hull, J., and White, A. (1998).** [Incorporating Volatility Updating into the Historical Simulation Method for Value-at-Risk](https://doi.org/10.21314/JOR.1998.004). *Journal of Risk*, 1(1), pp. 5–19.
-* **Jarque, C. M., and Bera, A. K. (1987).** [A Test for Normality of Observations and Regression Residuals](https://doi.org/10.2307/1403192). *International Statistical Review*, 55(2), pp. 163–172.
-* **J.P. Morgan and Reuters (1996).** [RiskMetrics Technical Document (4th Edition)](https://www.msci.com/documents/10199/5915b101-4206-4ba0-aee2-3449d5c7e95a). Morgan Guaranty Trust Company, New York.
 * **Kupiec, P. H. (1995).** [Techniques for Verifying the Accuracy of Risk Measurement Models](https://doi.org/10.3905/jod.1995.407942). *Journal of Derivatives*, 3(2), pp. 73–84.
-* **Mandelbrot, B. (1963).** [The Variation of Certain Speculative Prices](https://doi.org/10.1086/294632). *Journal of Business*, 36(4), pp. 394–419.
+* **Nelson, D. B. (1991).** [Conditional Heteroskedasticity in Asset Returns: A New Approach](https://doi.org/10.2307/2938260). *Econometrica*, 59(2), pp. 347–370.

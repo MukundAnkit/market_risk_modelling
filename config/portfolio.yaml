@@ -11,11 +11,20 @@ portfolio:
     AAPL: 0.20  # Apple Inc. ($2,000,000) - Concentrated Single-Stock Equity Risk
     TLT: 0.30   # iShares 20+ Year Treasury Bond ETF ($3,000,000) - Rates Duration
     GLD: 0.20   # SPDR Gold Trust ($2,000,000) - Inflation & Tail-Crisis Hedge
+  multi_asset_fx_weights:
+    SPY: 0.30   # US Large-Cap Equities ($3,000,000)
+    AAPL: 0.15  # US Tech Single-Stock Equity ($1,500,000)
+    TLT: 0.25   # US Long-Duration Sovereign Rates ($2,500,000)
+    FXE: 0.15   # EUR/USD Foreign Exchange Currency Exposure ($1,500,000)
+    GLD: 0.15   # Safe-Haven Gold Commodity ($1,500,000)
 
 candidate_trades:
   TSLA:
     description: "Pre-trade Marginal/Incremental VaR sizing candidate (Volatile Single Stock)"
     ticker: "TSLA"
+  FXE:
+    description: "EUR/USD Foreign Exchange risk factor sleeve (CurrencyShares Euro Trust / Spot EURUSD)"
+    ticker: "FXE"
 
 governance:
   holding_period_days: 1
@@ -38,6 +47,7 @@ data:
     - "GLD"
   extended_tickers:
     - "TSLA"
+    - "FXE"
   vix_csv_url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
   max_ffill_days: 1
   trading_days_per_year: 252
@@ -62,12 +72,22 @@ models:
     age_weighted_lambda: 0.98
     garch_p: 1
     garch_q: 1
+    egarch_p: 1
+    egarch_o: 1
+    egarch_q: 1
   backtesting:
     out_of_sample_days: 1500
     estimation_window: 250
     basel_window: 250
     kupiec_alpha: 0.05
     christoffersen_alpha: 0.05
+  stressed_var:
+    normal_window_start: "2017-01-01"
+    normal_window_end: "2017-12-31"
+    covid_stress_start: "2020-02-01"
+    covid_stress_end: "2021-01-31"
+    rates_stress_start: "2022-01-01"
+    rates_stress_end: "2022-12-31"
 
 derivatives:
   underlying_ticker: "SPY"
@@ -76,6 +96,13 @@ derivatives:
   time_to_expiry_days: 30
   protective_put_moneyness: 0.95   # 5% OTM Put Hedge
   straddle_moneyness: 1.00         # ATM Delta-Neutral Straddle
+  interest_rate_swap:
+    notional_usd: 5000000.0        # $5,000,000 5-Year Pay-Fixed / Receive-Floating USD SOFR IRS
+    tenor_years: 5
+    fixed_coupon_rate: 0.0420
+    initial_par_yield: 0.0420
+    payment_frequency: 2           # Semi-annual cash flows
+    daily_yield_vol_bps: 7.8       # Daily parallel yield curve volatility (bps)
   stress_grid:
     spot_shocks_pct: [-0.20, -0.10, -0.05, 0.0, 0.10]
     vol_shocks_pts: [-0.05, 0.0, 0.05, 0.15, 0.25]

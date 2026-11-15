@@ -211,6 +211,7 @@ def run_champion_challenger_backtest(
         "RiskMetrics EWMA Normal (λ=0.94)": "EWMA_Normal_VaR_USD",
         "GARCH(1,1) Normal": "GARCH11_Normal_VaR_USD",
         "GARCH(1,1) Student-t": "GARCH11_StudentT_VaR_USD",
+        "EGARCH(1,1) Filtered HS (FHS)": "EGARCH11_FHS_VaR_USD",
         "Age-Weighted HS (BRW, λ=0.98)": "Age_Weighted_HS_VaR_USD",
         "Hull-White Volatility-Weighted HS": "Hull_White_VWHS_VaR_USD",
     }
@@ -219,6 +220,8 @@ def run_champion_challenger_backtest(
     rolling_breaches_dict: Dict[str, pd.Series] = {}
 
     for label, col in model_mapping.items():
+        if col not in oos_df.columns:
+            continue
         var_series = oos_df[col].values
         hits = generate_hit_sequence(realized_losses, var_series)
         hits_s = pd.Series(hits, index=oos_df.index, name=label)

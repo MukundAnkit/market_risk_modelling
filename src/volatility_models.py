@@ -8,7 +8,12 @@ Implements Phase 2 (Walk) methodology:
 3. GARCH(1,1) Conditional Volatility via the `arch` library (with both Normal and Student-t innovations):
      sigma_t^2 = omega + alpha_1 * eps_{t-1}^2 + beta_1 * sigma_{t-1}^2
    extracting 1-step-ahead conditional volatility forecasts sigma_{t|t-1} and standardized residuals eta_t.
-4. Dynamic Non-Parametric Upgrades:
+4. Asymmetric EGARCH(1,1) Conditional Volatility & Filtered Historical Simulation (FHS) (Nelson, 1991):
+     ln(sigma_t^2) = omega + alpha * (|z_{t-1}| - E|z|) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
+   capturing the asymmetric leverage effect (gamma < 0) where negative return shocks amplify
+   conditional volatility more than positive shocks of equal magnitude, and rescaling empirical
+   standardized residuals (Filtered Historical Simulation) to forecast 1-day VaR and ES.
+5. Dynamic Non-Parametric Upgrades:
    - Age-Weighted Historical Simulation (Boudoukh, Richardson & Whitelaw / BRW Hybrid):
        w_i = (lambda^{i-1} * (1 - lambda)) / (1 - lambda^n)
    - Volatility-Weighted Historical Simulation (Hull & White, 1998):
@@ -136,6 +141,130 @@ def fit_garch11_volatility(
     }
 
 
+def fit_egarch11_volatility(
+    returns_series: pd.Series,
+    dist: str = "t",
+    scale_factor: float = 100.0,
+) -> Dict[str, object]:
+    """
+    Fit a Nelson (1991) Asymmetric Exponential GARCH(1,1,1) model (`vol='EGARCH'`, p=1, o=1, q=1):
+      ln(sigma_t^2) = omega + alpha_1 * (|z_{t-1}| - E[|z|]) + gamma_1 * z_{t-1} + beta_1 * ln(sigma_{t-1}^2)
+    where z_t = eps_t / sigma_t.
+    When gamma_1 < 0, negative return innovations (z_{t-1} < 0) increase log-variance more than
+    positive innovations of equal magnitude (the financial leverage / asymmetric volatility effect).
+    """
+    clean = returns_series.dropna()
+    scaled_rets = clean * scale_factor
+
+    am = arch_model(
+        scaled_rets,
+        mean="Constant",
+        vol="EGARCH",
+        p=1,
+        o=1,
+        q=1,
+        dist="t" if dist.lower() in ("t", "student", "student-t") else "normal",
+        rescale=False,
+    )
+    res = am.fit(disp="off", show_warning=False)
+
+    params = res.params.to_dict()
+    mu_scaled = float(params.get("mu", 0.0))
+    omega = float(params.get("omega", 0.0))
+    alpha1 = float(params.get("alpha[1]", 0.15))
+    gamma1 = float(params.get("gamma[1]", -0.08))
+    beta1 = float(params.get("beta[1]", 0.95))
+    nu_df = float(params.get("nu", np.nan))
+
+    cond_vol_contemp = (res.conditional_volatility / scale_factor).rename(f"EGARCH11_{dist}_contemp_vol")
+    std_resid = pd.Series(res.std_resid, index=clean.index, name=f"EGARCH11_{dist}_std_resid")
+
+    # Compute strict 1-step-ahead conditional volatility forecast sigma_{t|t-1}
+    # using the EGARCH log-variance recursion conditioned on F_{t-1}:
+    eps_scaled = (scaled_rets - mu_scaled).values
+    n = len(eps_scaled)
+    log_h = np.empty(n, dtype=np.float64)
+    uncond_log_h = omega / max(1.0 - beta1, 1e-3)
+    log_h[0] = uncond_log_h
+
+    # Expected absolute value E[|z|] under N(0,1) is sqrt(2/pi) ~ 0.79788456
+    e_abs_z = np.sqrt(2.0 / np.pi)
+    if not np.isnan(nu_df) and nu_df > 2.1:
+        from scipy.special import gamma as sp_gamma
+        e_abs_z = float(
+            2.0 * np.sqrt(nu_df - 2.0) * sp_gamma(0.5 * (nu_df + 1.0))
+            / ((nu_df - 1.0) * np.sqrt(np.pi) * sp_gamma(0.5 * nu_df))
+        )
+
+    for t in range(1, n):
+        sigma_prev = np.exp(0.5 * log_h[t - 1])
+        z_prev = eps_scaled[t - 1] / max(sigma_prev, 1e-8)
+        z_prev = float(np.clip(z_prev, -8.0, 8.0))
+        log_h[t] = (
+            omega
+            + alpha1 * (abs(z_prev) - e_abs_z)
+            + gamma1 * z_prev
+            + beta1 * log_h[t - 1]
+        )
+
+    cond_vol_1d = pd.Series(
+        np.exp(0.5 * log_h) / scale_factor,
+        index=clean.index,
+        name=f"EGARCH11_{dist}_1d_vol",
+    )
+
+    return {
+        "result": res,
+        "cond_vol_in_sample": cond_vol_contemp,
+        "cond_vol_forecast_1d": cond_vol_1d,
+        "std_residuals": std_resid,
+        "params": {
+            "mu_daily": mu_scaled / scale_factor,
+            "omega_log_var": omega,
+            "alpha1": alpha1,
+            "gamma1_asymmetry": gamma1,
+            "beta1": beta1,
+            "persistence": beta1,
+            "nu_df": nu_df,
+            "aic": float(res.aic),
+            "bic": float(res.bic),
+            "loglikelihood": float(res.loglikelihood),
+        },
+    }
+
+
+def egarch_filtered_hs_var_es(
+    window_returns: np.ndarray | pd.Series,
+    window_egarch_vols: np.ndarray | pd.Series,
+    current_egarch_vol_forecast: float,
+    mu_daily: float = 0.0,
+    alpha: float = 0.99,
+    notional_usd: float = 10_000_000.0,
+) -> Tuple[float, float]:
+    """
+    Filtered Historical Simulation (FHS) using Asymmetric EGARCH(1,1) Volatility (Barone-Adesi et al., 1999):
+      1. De-volatilize historical residuals over the rolling window:
+           z_{t-i} = (r_{t-i} - mu) / sigma_{t-i}^{EGARCH}
+      2. Rescale empirical standardized residuals by today's 1-step-ahead EGARCH volatility forecast sigma_{T|T-1}:
+           r_{T, i}^{FHS} = mu + sigma_{T|T-1}^{EGARCH} * z_{t-i}
+      3. Compute empirical non-parametric VaR and ES from the filtered loss distribution L_{T,i}^{FHS} = -V_0 * r_{T,i}^{FHS}.
+    """
+    r_arr = np.asarray(window_returns, dtype=np.float64)
+    v_arr = np.maximum(np.asarray(window_egarch_vols, dtype=np.float64), 1e-8)
+
+    std_resids = (r_arr - float(mu_daily)) / v_arr
+    fhs_returns = float(mu_daily) + float(current_egarch_vol_forecast) * std_resids
+    fhs_losses = -fhs_returns
+    sorted_losses = np.sort(fhs_losses)[::-1]
+
+    n = len(sorted_losses)
+    k_idx = min(max(int(np.floor((1.0 - alpha) * n)), 0), n - 1)
+    var_pct = float(sorted_losses[k_idx])
+    es_pct = float(np.mean(sorted_losses[: k_idx + 1]))
+
+    return var_pct * notional_usd, es_pct * notional_usd
+
+
 def age_weighted_hs_var_es(
     window_returns: np.ndarray | pd.Series,
     alpha: float = 0.99,
@@ -226,8 +355,9 @@ def build_dynamic_var_series(
       3. RiskMetrics EWMA Parametric VaR (lambda = 0.94)
       4. GARCH(1,1)-Normal Parametric VaR
       5. GARCH(1,1)-Student-t Parametric VaR
-      6. Age-Weighted Historical Simulation (BRW, lambda = 0.98)
-      7. Hull-White Volatility-Weighted Historical Simulation (EWMA-scaled)
+      6. EGARCH(1,1) Filtered Historical Simulation (FHS) — asymmetric leverage volatility + empirical residual scaling
+      7. Age-Weighted Historical Simulation (BRW, lambda = 0.98)
+      8. Hull-White Volatility-Weighted Historical Simulation (EWMA-scaled)
     All forecasts for date t strictly use returns and volatility states up to t-1.
     """
     clean_rets = portfolio_returns.dropna()
@@ -241,8 +371,11 @@ def build_dynamic_var_series(
 
     garch_norm_fit = fit_garch11_volatility(clean_rets, dist="normal")
     garch_t_fit = fit_garch11_volatility(clean_rets, dist="t")
+    egarch_t_fit = fit_egarch11_volatility(clean_rets, dist="t")
+
     garch_norm_vol = garch_norm_fit["cond_vol_forecast_1d"].values
     garch_t_vol = garch_t_fit["cond_vol_forecast_1d"].values
+    egarch_t_vol = egarch_t_fit["cond_vol_forecast_1d"].values
     nu_garch_t = float(garch_t_fit["params"]["nu_df"])
 
     z_alpha = float(stats.norm.ppf(alpha))
@@ -252,6 +385,7 @@ def build_dynamic_var_series(
     for t in range(lookback_days, n_total):
         win_rets = r_vals[t - lookback_days : t]
         win_ewma = ewma_vals[t - lookback_days : t]
+        win_egarch = egarch_t_vol[t - lookback_days : t]
         win_losses = -win_rets
         sorted_losses = np.sort(win_losses)[::-1]
         k_idx = min(max(int(np.floor((1.0 - alpha) * lookback_days)), 0), lookback_days - 1)
@@ -280,12 +414,23 @@ def build_dynamic_var_series(
         q_mult = max(t_scale_mult, emp_z_q)
         garch_t_var = (-garch_t_fit["params"]["mu_daily"] + q_mult * sigma_gt_t) * notional_usd
 
-        # 6. Age-Weighted HS (BRW)
+        # 6. Asymmetric EGARCH(1,1) Filtered Historical Simulation (FHS)
+        sigma_eg_t = float(egarch_t_vol[t])
+        egarch_fhs_var, egarch_fhs_es = egarch_filtered_hs_var_es(
+            win_rets,
+            win_egarch,
+            current_egarch_vol_forecast=sigma_eg_t,
+            mu_daily=float(egarch_t_fit["params"]["mu_daily"]),
+            alpha=alpha,
+            notional_usd=notional_usd,
+        )
+
+        # 7. Age-Weighted HS (BRW)
         age_hs_var, _ = age_weighted_hs_var_es(
             win_rets, alpha=alpha, lambda_decay=age_lambda, notional_usd=notional_usd
         )
 
-        # 7. Hull-White Volatility-Weighted HS (using EWMA volatility ratios)
+        # 8. Hull-White Volatility-Weighted HS (using EWMA volatility ratios)
         hw_vwhs_var, _ = volatility_weighted_hs_var_es(
             win_rets, win_ewma, current_vol_forecast=sigma_ewma_t, alpha=alpha, notional_usd=notional_usd
         )
@@ -301,10 +446,13 @@ def build_dynamic_var_series(
                 "EWMA_Normal_VaR_USD": ewma_norm_var,
                 "GARCH11_Normal_VaR_USD": garch_norm_var,
                 "GARCH11_StudentT_VaR_USD": garch_t_var,
+                "EGARCH11_FHS_VaR_USD": egarch_fhs_var,
+                "EGARCH11_FHS_ES_USD": egarch_fhs_es,
                 "Age_Weighted_HS_VaR_USD": age_hs_var,
                 "Hull_White_VWHS_VaR_USD": hw_vwhs_var,
                 "EWMA_Ann_Vol_pct": sigma_ewma_t * np.sqrt(252) * 100.0,
                 "GARCH11_Ann_Vol_pct": sigma_gn_t * np.sqrt(252) * 100.0,
+                "EGARCH11_Ann_Vol_pct": sigma_eg_t * np.sqrt(252) * 100.0,
                 "Rolling_250d_Ann_Vol_pct": sd_w * np.sqrt(252) * 100.0,
             }
         )
@@ -313,7 +461,9 @@ def build_dynamic_var_series(
     meta = {
         "garch_normal_params": garch_norm_fit["params"],
         "garch_t_params": garch_t_fit["params"],
+        "egarch_t_params": egarch_t_fit["params"],
         "garch_normal_std_resid": garch_norm_fit["std_residuals"],
         "garch_t_std_resid": garch_t_fit["std_residuals"],
+        "egarch_t_std_resid": egarch_t_fit["std_residuals"],
     }
     return df_out, meta

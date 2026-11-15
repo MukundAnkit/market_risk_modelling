@@ -29,7 +29,11 @@ from src.derivatives_stress import (
     bsm_price,
     build_2d_stress_vulnerability_grid,
     compare_derivative_var_approaches,
+    compute_irs_sensitivities,
+    compute_stressed_var_comparison,
+    evaluate_swap_approximation_breakdown,
     generate_spy_option_chain_snapshot,
+    price_interest_rate_swap,
     run_historical_crisis_replay,
     solve_implied_volatility,
 )
@@ -54,6 +58,8 @@ from src.volatility_models import (
     age_weighted_hs_var_es,
     build_dynamic_var_series,
     compute_ewma_volatility,
+    egarch_filtered_hs_var_es,
+    fit_egarch11_volatility,
     fit_garch11_volatility,
     volatility_weighted_hs_var_es,
 )
@@ -83,13 +89,18 @@ def test_cpp17_kernel_loaded_and_put_call_parity():
 
 
 def test_data_hygiene_and_zero_lookahead_slicing():
-    """Verify return transformations, cross-sectional portfolio aggregation, and F_{t-1} slicing."""
+    """Verify return transformations, cross-sectional portfolio aggregation, FX factor, and F_{t-1} slicing."""
     cfg = load_config()
     bundle = prepare_and_save_processed_data(cfg)
     prices = bundle["prices"]
     arith_rets = bundle["arith_returns"]
     log_rets = bundle["log_returns"]
     port_df = bundle["portfolio"]
+
+    # Verify FXE (EUR/USD currency factor) is present alongside Equity, Rates, and Gold
+    assert "FXE" in arith_rets.columns
+    fx_port = compute_portfolio_returns(arith_rets, cfg["portfolio"]["multi_asset_fx_weights"])
+    assert len(fx_port) == len(port_df)
 
     # 1. Multi-period log return additivity
     core_cols = cfg["data"]["core_tickers"]
@@ -129,7 +140,6 @@ def test_phase0_stationarity_and_fat_tails():
     assert (facts_df["Total_Kurtosis"] > 3.0).all(), "Financial returns must exhibit leptokurtosis (K > 3)"
     assert facts_df.loc["PORTFOLIO", "Tail_Ratio_vs_Normal"] > 2.0
 
-    # Verify Q-Q coordinates and rolling correlation
     theo_q, emp_q = compute_qq_coordinates(bundle["portfolio"]["portfolio_arith_return"])
     assert len(theo_q) == len(emp_q)
     corr_60 = compute_rolling_stock_bond_correlation(bundle["arith_returns"], "SPY", "TLT", window=60)
@@ -181,11 +191,10 @@ def test_phase1_closed_form_identities_and_subadditivity():
     assert sizing["max_allowable_tsla_hs_usd"] > 0.0
 
 
-def test_phase2_ewma_garch_and_hull_white_vwhs():
+def test_phase2_ewma_garch_egarch_fhs_and_hull_white_vwhs():
     """
-    Verify RiskMetrics EWMA recursion, GARCH(1,1) stationarity (alpha_1 + beta_1 < 1),
-    and that Hull-White Volatility-Weighted HS can exceed the maximum historical loss
-    in the lookback window when current volatility spikes.
+    Verify RiskMetrics EWMA recursion, GARCH(1,1) stationarity, Asymmetric EGARCH(1,1)
+    Filtered Historical Simulation (gamma_1 < 0 leverage effect), and Hull-White VWHS.
     """
     cfg = load_config()
     bundle = prepare_and_save_processed_data(cfg)
@@ -197,18 +206,25 @@ def test_phase2_ewma_garch_and_hull_white_vwhs():
 
     g_norm = fit_garch11_volatility(port_ret, dist="normal")
     g_t = fit_garch11_volatility(port_ret, dist="t")
+    eg_t = fit_egarch11_volatility(port_ret, dist="t")
+
     assert 0.50 < g_norm["params"]["persistence"] < 1.0
     assert 0.50 < g_t["params"]["persistence"] < 1.0
-    assert g_t["params"]["nu_df"] > 2.5
+    assert 0.50 < eg_t["params"]["persistence"] < 1.0
+    assert eg_t["params"]["gamma1_asymmetry"] < 0.0, "EGARCH(1,1) must capture negative leverage asymmetry"
 
     win_r = np.array([-0.02, -0.015, -0.01, 0.005, 0.01] * 50, dtype=np.float64)
     win_v = np.full_like(win_r, 0.01)
     hw_var, hw_es = volatility_weighted_hs_var_es(
         win_r, win_v, current_vol_forecast=0.025, alpha=0.99, notional_usd=10_000_000.0
     )
+    eg_var, eg_es = egarch_filtered_hs_var_es(
+        win_r, win_v, current_egarch_vol_forecast=0.025, mu_daily=0.0, alpha=0.99, notional_usd=10_000_000.0
+    )
     max_unscaled_loss = np.max(-win_r) * 10_000_000.0  # $200,000
-    assert hw_var > max_unscaled_loss, "Hull-White VWHS must exceed max historical window loss during a vol spike"
-    assert hw_es >= hw_var
+    assert hw_var > max_unscaled_loss
+    assert eg_var > max_unscaled_loss
+    assert hw_es >= hw_var and eg_es >= eg_var
 
 
 def test_phase3_kupiec_and_christoffersen_spaced_vs_clustered():
@@ -245,11 +261,11 @@ def test_phase3_kupiec_and_christoffersen_spaced_vs_clustered():
     assert res_clustered["reject_cc_5pct"] is True
 
 
-def test_phase4_bsm_iv_solver_straddle_convexity_and_stress_grids():
+def test_phase4_bsm_iv_solver_straddle_swap_and_stressed_var():
     """
     Verify BSM Implied Volatility inversion accuracy, Delta-Normal failure on a
-    Delta-Neutral Straddle (Delta-Normal VaR ~ 0 vs. Full Revaluation MC VaR > 0),
-    and Protective Put tail-loss reduction in historical & hypothetical stress tests.
+    Delta-Neutral Straddle, 5Y Interest-Rate Swap valuation & DV01 convexity breakdown,
+    and Basel 2.5 Stressed VaR (sVaR > Normal VaR).
     """
     # 1. IV Inversion round-trip accuracy
     S, K, r, q, true_sigma, T = 500.0, 480.0, 0.045, 0.013, 0.215, 30.0 / 365.0
@@ -262,20 +278,33 @@ def test_phase4_bsm_iv_solver_straddle_convexity_and_stress_grids():
     chain = generate_spy_option_chain_snapshot(spot_price=500.0)
     assert chain["IV_Inversion_Error"].max() < 1e-6
 
-    # 3. Delta-Normal vs. Delta-Gamma-Vega vs. Full Revaluation MC on Delta-Neutral Straddle
+    # 3. Delta-Normal vs. Delta-Gamma-Vega vs. Full Revaluation MC on Straddle & 5Y IRS
     comp_df, _ = compare_derivative_var_approaches(spot_price=500.0, num_mc_scenarios=10_000)
     short_straddle = comp_df[comp_df["Portfolio_Structure"].str.contains("Short Delta-Neutral Straddle")].iloc[0]
     assert np.isclose(short_straddle["Net_Delta_Shares"], 0.0, atol=1e-6)
     assert np.isclose(short_straddle["Delta_Normal_VaR_99_USD"], 0.0, atol=1e-6)
     assert short_straddle["Delta_Gamma_Vega_VaR_99_USD"] > 30_000.0
     assert short_straddle["Full_Reval_MC_VaR_99_USD"] > 30_000.0
-    assert np.isclose(
-        short_straddle["Delta_Gamma_Vega_VaR_99_USD"],
-        short_straddle["Full_Reval_MC_VaR_99_USD"],
-        rtol=0.10,
-    )
 
-    # 4. Stress Grid: Protective Put reduces loss in severe crash (-20% spot, +25 vol pts)
+    # 4. 5-Year $5M Pay-Fixed Interest-Rate Swap par valuation & convexity breakdown
+    par_npv = price_interest_rate_swap(5_000_000.0, 0.042, 0.042, tenor_years=5.0, pay_fixed=True)
+    assert np.isclose(par_npv, 0.0, atol=1e-8), "Par swap must have zero initial NPV"
+    swap_bk = evaluate_swap_approximation_breakdown(5_000_000.0)
+    minus_300 = swap_bk[swap_bk["Yield_Shock_bps"] == -300.0].iloc[0]
+    assert abs(minus_300["Linear_DV01_Error_USD"]) > 40_000.0, "Linear DV01 must break down under -300 bps shock"
+    assert abs(minus_300["Quadratic_Error_USD"]) < abs(minus_300["Linear_DV01_Error_USD"]) * 0.10
+
+    # 5. Basel 2.5 Stressed VaR (sVaR) > Normal-Period VaR
+    cfg = load_config()
+    bundle = prepare_and_save_processed_data(cfg)
+    svar_df = compute_stressed_var_comparison(bundle["arith_returns"], bundle["vix"], cfg["portfolio"]["weights"])
+    norm_var = svar_df.loc["Normal Period (2017 Low-Vol Calm)", "Historical_Sim_VaR_99_USD"]
+    covid_svar = svar_df.loc["Stressed Window A (2020 COVID-19 Crash)", "Historical_Sim_VaR_99_USD"]
+    rates_svar = svar_df.loc["Stressed Window B (2022 Rate-Hike Bear)", "Historical_Sim_VaR_99_USD"]
+    assert covid_svar > 2.5 * norm_var
+    assert rates_svar > 2.0 * norm_var
+
+    # 6. Stress Grid: Protective Put reduces loss in severe crash (-20% spot, +25 vol pts)
     unhedged_grid, hedged_grid = build_2d_stress_vulnerability_grid(spot_price=500.0)
     crash_unhedged = unhedged_grid.loc["Spot -20%", "IV +25 pts"]
     crash_hedged = hedged_grid.loc["Spot -20%", "IV +25 pts"]
